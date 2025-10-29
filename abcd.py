@@ -5,11 +5,9 @@ os.system("pip install streamlit reportlab pillow")
 # 캐스케이드/환기 기성 청구 양식 - 동적 사진(최대 9컷), 3xN 그리드 PDF
 
 import io
-import os
 import re
 import unicodedata
 from math import ceil
-from datetime import date
 from typing import List, Tuple, Optional
 
 import streamlit as st
@@ -26,10 +24,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 # ─────────────────────────────────────────
 # 페이지 설정
 # ─────────────────────────────────────────
-st.set_page_config(
-    page_title="캐스케이드/환기 기성 청구 양식",
-    layout="wide"
-)
+st.set_page_config(page_title="캐스케이드/환기 기성 청구 양식", layout="wide")
 
 # ─────────────────────────────────────────
 # 폰트 등록 (한글 깨짐 방지)
@@ -42,8 +37,10 @@ def try_register_font():
     ]
     for family, path in candidates:
         try:
-            if os.path.exists(path):
+            import os as _os
+            if _os.path.exists(path):
                 pdfmetrics.registerFont(TTFont(family, path))
+                # 볼드/이탤릭은 동일 폰트로 매핑 시도
                 try:
                     pdfmetrics.registerFont(TTFont(f"{family}-Bold", path))
                     pdfmetrics.registerFont(TTFont(f"{family}-Italic", path))
@@ -57,22 +54,16 @@ def try_register_font():
 
 BASE_FONT, FONT_OK = try_register_font()
 if not FONT_OK:
-    st.warning("⚠️ 한글 폰트 임베드 실패. 실행 폴더에 `NanumGothic.ttf`를 두면 PDF 한글이 깨지지 않습니다.")
+    st.warning("⚠️ 한글 폰트 임베드 실패. 저장소 루트에 `NanumGothic.ttf`를 두면 PDF 한글이 깨지지 않습니다.")
 
 ss = getSampleStyleSheet()
 styles = {
-    "title": ParagraphStyle(
-        name="title", parent=ss["Heading1"], fontName=BASE_FONT,
-        fontSize=18, leading=22, alignment=1, spaceAfter=8
-    ),
-    "cell": ParagraphStyle(
-        name="cell", parent=ss["Normal"], fontName=BASE_FONT,
-        fontSize=10, leading=13
-    ),
-    "small_center": ParagraphStyle(
-        name="small_center", parent=ss["Normal"], fontName=BASE_FONT,
-        fontSize=8.5, leading=11, alignment=1
-    ),
+    "title": ParagraphStyle(name="title", parent=ss["Heading1"], fontName=BASE_FONT,
+                            fontSize=18, leading=22, alignment=1, spaceAfter=8),
+    "cell": ParagraphStyle(name="cell", parent=ss["Normal"], fontName=BASE_FONT,
+                           fontSize=10, leading=13),
+    "small_center": ParagraphStyle(name="small_center", parent=ss["Normal"], fontName=BASE_FONT,
+                                   fontSize=8.5, leading=11, alignment=1),
 }
 
 # ─────────────────────────────────────────
@@ -84,16 +75,16 @@ def sanitize_filename(name: str) -> str:
     return name or "output"
 
 def enforce_aspect_pad(img: Image.Image, target_ratio: float = 4/3) -> Image.Image:
-    """이미지 비율을 target_ratio로 맞추기 위해 패딩(흰색) 추가."""
+    """이미지 비율을 target_ratio로 맞추기 위해 흰색 패딩 추가."""
     w, h = img.size
     cur_ratio = w / h
     if abs(cur_ratio - target_ratio) < 1e-3:
         return img
 
-    if cur_ratio > target_ratio:          # 가로가 더 김 → 세로 확장
+    if cur_ratio > target_ratio:  # 가로가 더 김 → 세로 확장
         new_h = int(round(w / target_ratio))
         new_w = w
-    else:                                  # 세로가 더 김 → 가로 확장
+    else:  # 세로가 더 김 → 가로 확장
         new_w = int(round(h * target_ratio))
         new_h = h
 
@@ -124,6 +115,8 @@ def _pil_to_bytesio(img: Image.Image, quality=85) -> io.BytesIO:
 # ─────────────────────────────────────────
 # PDF 빌더 (3열 그리드, 최대 9장)
 # ─────────────────────────────────────────
+from typing import Optional, Tuple, List  # 재확인
+
 def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Image.Image]]]) -> bytes:
     buf = io.BytesIO()
     PAGE_W, PAGE_H = A4
@@ -143,9 +136,7 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Im
 
     # 메타 테이블 (현장 주소만)
     meta_tbl = Table(
-        [
-            [Paragraph("현장 주소", styles["cell"]), Paragraph(site_addr.strip() or "-", styles["cell"])]
-        ],
+        [[Paragraph("현장 주소", styles["cell"]), Paragraph(site_addr.strip() or "-", styles["cell"])]],
         colWidths=[80, PAGE_W - 2*LEFT_RIGHT_MARGIN - 80]
     )
     meta_tbl.setStyle(TableStyle([
@@ -160,12 +151,11 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Im
     story.append(meta_tbl)
     story.append(Spacer(1, 6))
 
-    # 사진 그리드: 3열, 행 높이 조정 (1페이지 수렴)
+    # 사진 그리드: 3열
     col_count = 3
     usable_width = PAGE_W - 2*LEFT_RIGHT_MARGIN
     col_width = usable_width / col_count
 
-    # 행 수에 따라 높이를 조금 조정 (최대 9장 = 3행)
     n = min(len(items), 9)
     rows = ceil(n / col_count)
 
@@ -174,7 +164,6 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Im
     IMAGE_MAX_H = ROW_HEIGHT - CAPTION_HEIGHT - 8
     IMAGE_MAX_W = col_width - 8
 
-    # 셀 생성
     cells = []
     for label, pil_img in items[:9]:
         if pil_img is not None:
@@ -182,7 +171,6 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Im
             img_resized = _resize_for_pdf(pil_img, max_px=1400)
             bio = _pil_to_bytesio(img_resized, quality=85)
 
-            # 4:3 비율로 셀 안 배치
             target_w = IMAGE_MAX_W
             target_h = target_w * 3 / 4
             if target_h > IMAGE_MAX_H:
@@ -193,8 +181,7 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Im
             rl_img.hAlign = "CENTER"
 
             cell = Table(
-                [[rl_img],
-                 [Paragraph(label, styles["small_center"])]],
+                [[rl_img], [Paragraph(label, styles["small_center"])]],
                 colWidths=[col_width],
                 rowHeights=[ROW_HEIGHT - CAPTION_HEIGHT, CAPTION_HEIGHT]
             )
@@ -221,7 +208,6 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Im
             ]))
         cells.append(cell)
 
-    # 빈칸 채우기 (그리드 정렬)
     while len(cells) % col_count != 0:
         cells.append(
             Table(
@@ -232,7 +218,6 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Im
             )
         )
 
-    # 그리드 조립
     grid_rows = [cells[i*col_count:(i+1)*col_count] for i in range(len(cells)//col_count)]
     grid_tbl = Table(
         grid_rows,
@@ -263,13 +248,54 @@ if "labels" not in st.session_state:
     st.session_state.labels = {}  # {idx: {"choice": "...", "custom": "..."}}
 
 # ─────────────────────────────────────────
+# 도우미: 선택 삭제 시 세션키 재배열
+# ─────────────────────────────────────────
+def reindex_after_delete(keep_indices):
+    """선택 삭제 후, fu_i/sel_i/custom_i/del_i 키들을 0..N-1로 재정렬"""
+    old_to_new = {old_i: new_i for new_i, old_i in enumerate(keep_indices)}
+
+    # 1) 값 복사 (새 인덱스로)
+    for old_i, new_i in old_to_new.items():
+        # 업로드 파일
+        old_fu_key, new_fu_key = f"fu_{old_i}", f"fu_{new_i}"
+        if old_fu_key in st.session_state:
+            st.session_state[new_fu_key] = st.session_state[old_fu_key]
+        # 선택값들
+        old_sel_key, new_sel_key = f"sel_{old_i}", f"sel_{new_i}"
+        if old_sel_key in st.session_state:
+            st.session_state[new_sel_key] = st.session_state[old_sel_key]
+        old_custom_key, new_custom_key = f"custom_{old_i}", f"custom_{new_i}"
+        if old_custom_key in st.session_state:
+            st.session_state[new_custom_key] = st.session_state[old_custom_key]
+        # 삭제 체크박스는 새로 그릴 것이므로 복사 안함
+
+    # 2) 오래된 키들 제거
+    max_old = st.session_state.photo_count
+    for old_i in range(max_old):
+        if old_i not in keep_indices:
+            for prefix in ("fu_", "sel_", "custom_", "del_"):
+                k = f"{prefix}{old_i}"
+                if k in st.session_state:
+                    del st.session_state[k]
+
+    # 3) 라벨 상태 재구성
+    new_labels = {}
+    for old_i, new_i in old_to_new.items():
+        new_labels[new_i] = st.session_state.labels.get(old_i, {})
+    st.session_state.labels = new_labels
+
+    # 4) 개수 업데이트
+    st.session_state.photo_count = len(keep_indices)
+
+# ─────────────────────────────────────────
 # 상단 UI
 # ─────────────────────────────────────────
 st.markdown("### 캐스케이드/환기 기성 청구 양식")
-st.info("모바일에서는 **촬영(카메라)** 또는 **사진/갤러리 선택**으로 업로드 가능합니다. 모든 사진은 4:3 비율로 자동 보정됩니다.")
+st.info("모바일에서 **사진 버튼**을 누르면 *사진보관함/사진찍기/파일선택*이 뜹니다. 모든 사진은 4:3 비율로 자동 보정됩니다.")
 
 # 모드 선택
-mode = st.radio("양식 종류 선택", options=["캐스케이드", "환기"], horizontal=True, index=0 if st.session_state.mode=="캐스케이드" else 1)
+mode = st.radio("양식 종류 선택", options=["캐스케이드", "환기"], horizontal=True,
+                index=0 if st.session_state.mode == "캐스케이드" else 1)
 st.session_state.mode = mode
 
 # 현장 주소
@@ -289,29 +315,45 @@ st.markdown("#### 현장 사진")
 max_photos = 9
 for i in range(st.session_state.photo_count):
     with st.container(border=True):
-        cols = st.columns([1, 2, 2])
-        with cols[0]:
-            st.caption(f"사진 {i+1}")
-            # 드롭다운
+        head = st.columns([0.2, 1.2, 1.8, 2.0])
+        # 삭제 체크박스
+        with head[0]:
+            st.checkbox("", key=f"del_{i}")
+            st.caption(f"{i+1}")
+        # 드롭다운 + 직접입력
+        with head[1]:
             options = CASCADE_OPTIONS if mode == "캐스케이드" else VENT_OPTIONS
             current_choice = st.session_state.labels.get(i, {}).get("choice", options[0])
-            choice = st.selectbox("항목 선택", options=options, key=f"sel_{i}", index=(options.index(current_choice) if current_choice in options else 0))
-
-            # 직접입력일 때 텍스트
+            choice = st.selectbox("항목", options=options, key=f"sel_{i}",
+                                  index=(options.index(current_choice) if current_choice in options else 0))
             custom_default = st.session_state.labels.get(i, {}).get("custom", "")
             custom_label = ""
             if choice == "직접입력":
-                custom_label = st.text_input("항목명 직접입력", value=custom_default, key=f"custom_{i}", placeholder="예: 배기후드 시공 전·후")
-
-            # 상태 저장
+                custom_label = st.text_input("항목명 직접입력", value=custom_default,
+                                             key=f"custom_{i}", placeholder="예: 배기후드 시공 전·후")
             st.session_state.labels[i] = {"choice": choice, "custom": custom_label}
 
-        with cols[1]:
-            cam = st.camera_input("📷 촬영", key=f"cam_{i}")
-        with cols[2]:
-            fu = st.file_uploader("사진/갤러리 선택", type=["jpg", "jpeg", "png"], key=f"fu_{i}")
+        # 파일 업로더 (단일 컨트롤)
+        with head[2]:
+            st.write("")  # 줄맞춤
+            st.file_uploader(
+                "📷 사진 (촬영/보관함/파일)",
+                type=["jpg", "jpeg", "png"],
+                key=f"fu_{i}",
+                accept_multiple_files=False
+            )
 
-# 추가/삭제 버튼
+        # 미리보기(선택 시)
+        with head[3]:
+            uploaded = st.session_state.get(f"fu_{i}")
+            if uploaded is not None:
+                try:
+                    img = Image.open(uploaded)
+                    st.image(img, caption="미리보기", use_container_width=True)
+                except Exception:
+                    st.caption("이미지 미리보기를 표시할 수 없습니다.")
+
+# 하단 제어 버튼
 cc1, cc2, cc3 = st.columns([1,1,6])
 with cc1:
     if st.button("➕ 사진 추가", use_container_width=True):
@@ -320,13 +362,14 @@ with cc1:
         else:
             st.warning("최대 9장까지 추가할 수 있습니다.")
 with cc2:
-    if st.button("➖ 마지막 삭제", use_container_width=True):
-        if st.session_state.photo_count > 1:
-            # 마지막 라벨 상태 제거
-            st.session_state.labels.pop(st.session_state.photo_count-1, None)
-            st.session_state.photo_count -= 1
+    if st.button("🗑 선택 삭제", use_container_width=True):
+        to_delete = [i for i in range(st.session_state.photo_count) if st.session_state.get(f"del_{i}", False)]
+        if not to_delete:
+            st.warning("삭제할 사진을 체크해 주세요.")
         else:
-            st.warning("최소 1장은 유지됩니다.")
+            keep = [i for i in range(st.session_state.photo_count) if i not in to_delete]
+            reindex_after_delete(keep)
+            st.success("선택한 사진을 삭제했습니다.")
 
 # 제출 버튼
 submitted = st.button("📄 PDF 생성")
@@ -339,16 +382,15 @@ if submitted:
             # 라벨 결정
             choice = st.session_state.labels.get(i, {}).get("choice", "직접입력")
             custom = st.session_state.labels.get(i, {}).get("custom", "")
-            label = custom.strip() if choice == "직접입력" and custom.strip() else choice
+            label = custom.strip() if (choice == "직접입력" and custom.strip()) else choice
 
-            # 이미지 선택(촬영 우선)
-            cam = st.session_state.get(f"cam_{i}")
-            fu = st.session_state.get(f"fu_{i}")
             pil_img = None
-            if cam is not None:
-                pil_img = Image.open(cam).convert("RGB")
-            elif fu is not None:
-                pil_img = Image.open(fu).convert("RGB")
+            uploaded = st.session_state.get(f"fu_{i}")
+            if uploaded is not None:
+                try:
+                    pil_img = Image.open(uploaded).convert("RGB")
+                except Exception:
+                    pil_img = None
 
             if pil_img is not None:
                 pil_img = enforce_aspect_pad(pil_img, 4/3)
@@ -374,12 +416,11 @@ if submitted:
 with st.expander("도움말 / 안내"):
     st.markdown(
         """
-- **양식 선택**: 상단에서 *캐스케이드/환기* 중 선택하면 PDF 제목이 자동으로 반영됩니다.
-- **현장 주소**: 이 항목만 메타정보로 포함됩니다.
-- **사진 추가**: 기본 1장으로 시작하며 **➕ 사진 추가**로 최대 9장까지 늘릴 수 있습니다.
-- **항목 라벨**: 캐스케이드는 드롭다운에서 항목을 선택하거나 **직접입력**을 선택해 텍스트를 입력하세요. 환기는 **직접입력**만 제공합니다.
-- **사진 비율**: 모든 사진은 **4:3 비율(패딩)** 로 자동 보정됩니다. 용량은 자동으로 리사이즈/압축됩니다.
-- **한글 깨짐**: 실행 폴더에 `NanumGothic.ttf`를 두면 PDF 내 한글이 깨지지 않습니다(윈도우는 `맑은고딕` 자동 시도).
+- **사진 버튼** 하나로 *사진보관함/사진찍기/파일선택* 선택 가능합니다(모바일 브라우저별 UI 상이).
+- **선택 삭제**: 각 사진 카드 왼쪽 체크 → **🗑 선택 삭제**.
+- **캐스케이드**: 드롭다운에서 항목 선택 또는 **직접입력** 사용.
+- **환기**: **직접입력**만 제공.
+- 모든 사진은 **4:3 비율(패딩)** 로 보정, PDF 내 자동 리사이즈/압축.
+- 한글 폰트는 저장소 루트에 `NanumGothic.ttf`를 두면 깨지지 않습니다.
         """
     )
-
