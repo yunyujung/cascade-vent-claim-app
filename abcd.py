@@ -2,11 +2,12 @@ import os
 os.system("pip install streamlit reportlab pillow")
 
 # -*- coding: utf-8 -*-
-# 캐스케이드/환기 기성 청구 양식 - 동적 사진(최대 9컷), 3xN 그리드 PDF
+# 캐스케이드/환기 기성 청구 양식 - 동적 사진(최대 9컷), 3xN 그리드 PDF (ID기반 관리)
 
 import io
 import re
 import unicodedata
+import uuid
 from math import ceil
 from typing import List, Tuple, Optional
 
@@ -40,7 +41,6 @@ def try_register_font():
             import os as _os
             if _os.path.exists(path):
                 pdfmetrics.registerFont(TTFont(family, path))
-                # 볼드/이탤릭은 동일 폰트로 매핑 시도
                 try:
                     pdfmetrics.registerFont(TTFont(f"{family}-Bold", path))
                     pdfmetrics.registerFont(TTFont(f"{family}-Italic", path))
@@ -115,8 +115,6 @@ def _pil_to_bytesio(img: Image.Image, quality=85) -> io.BytesIO:
 # ─────────────────────────────────────────
 # PDF 빌더 (3열 그리드, 최대 9장)
 # ─────────────────────────────────────────
-from typing import Optional, Tuple, List  # 재확인
-
 def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Image.Image]]]) -> bytes:
     buf = io.BytesIO()
     PAGE_W, PAGE_H = A4
@@ -238,54 +236,22 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Im
     return buf.getvalue()
 
 # ─────────────────────────────────────────
-# 세션 상태
+# 세션 상태 (ID 기반 아이템 리스트)
 # ─────────────────────────────────────────
-if "photo_count" not in st.session_state:
-    st.session_state.photo_count = 1  # 기본 1개
+if "items" not in st.session_state:
+    # 각 항목: {"id": str, "choice": "장비납품" 등, "custom": ""}
+    st.session_state.items = [{"id": str(uuid.uuid4()), "choice": "장비납품", "custom": ""}]
+
 if "mode" not in st.session_state:
     st.session_state.mode = "캐스케이드"
-if "labels" not in st.session_state:
-    st.session_state.labels = {}  # {idx: {"choice": "...", "custom": "..."}}
 
-# ─────────────────────────────────────────
-# 도우미: 선택 삭제 시 세션키 재배열
-# ─────────────────────────────────────────
-def reindex_after_delete(keep_indices):
-    """선택 삭제 후, fu_i/sel_i/custom_i/del_i 키들을 0..N-1로 재정렬"""
-    old_to_new = {old_i: new_i for new_i, old_i in enumerate(keep_indices)}
-
-    # 1) 값 복사 (새 인덱스로)
-    for old_i, new_i in old_to_new.items():
-        # 업로드 파일
-        old_fu_key, new_fu_key = f"fu_{old_i}", f"fu_{new_i}"
-        if old_fu_key in st.session_state:
-            st.session_state[new_fu_key] = st.session_state[old_fu_key]
-        # 선택값들
-        old_sel_key, new_sel_key = f"sel_{old_i}", f"sel_{new_i}"
-        if old_sel_key in st.session_state:
-            st.session_state[new_sel_key] = st.session_state[old_sel_key]
-        old_custom_key, new_custom_key = f"custom_{old_i}", f"custom_{new_i}"
-        if old_custom_key in st.session_state:
-            st.session_state[new_custom_key] = st.session_state[old_custom_key]
-        # 삭제 체크박스는 새로 그릴 것이므로 복사 안함
-
-    # 2) 오래된 키들 제거
-    max_old = st.session_state.photo_count
-    for old_i in range(max_old):
-        if old_i not in keep_indices:
-            for prefix in ("fu_", "sel_", "custom_", "del_"):
-                k = f"{prefix}{old_i}"
-                if k in st.session_state:
-                    del st.session_state[k]
-
-    # 3) 라벨 상태 재구성
-    new_labels = {}
-    for old_i, new_i in old_to_new.items():
-        new_labels[new_i] = st.session_state.labels.get(old_i, {})
-    st.session_state.labels = new_labels
-
-    # 4) 개수 업데이트
-    st.session_state.photo_count = len(keep_indices)
+# 옵션
+CASCADE_OPTIONS = [
+    "장비납품", "급탕모듈러설치", "난방모듈러설치", "하부배관", "LLH시공",
+    "연도시공", "외부연도마감", "드레인호스", "NCC판넬", "완료사진", "직접입력"
+]
+VENT_OPTIONS = ["직접입력"]
+MAX_PHOTOS = 9
 
 # ─────────────────────────────────────────
 # 상단 UI
@@ -297,78 +263,75 @@ st.info("모바일에서 **사진 버튼**을 누르면 *사진보관함/사진�
 mode = st.radio("양식 종류 선택", options=["캐스케이드", "환기"], horizontal=True,
                 index=0 if st.session_state.mode == "캐스케이드" else 1)
 st.session_state.mode = mode
+options = CASCADE_OPTIONS if mode == "캐스케이드" else VENT_OPTIONS
 
 # 현장 주소
-site_addr = st.text_input("현장 주소", value="", placeholder="예: 서울특별시 ○○구 ○○로 12, 101동 101호")
+site_addr = st.text_input("현장 주소", value=st.session_state.get("site_addr", ""),
+                          placeholder="예: 서울특별시 ○○구 ○○로 12, 101동 101호")
+st.session_state.site_addr = site_addr
 
-# 라벨 옵션
-CASCADE_OPTIONS = [
-    "장비납품", "급탕모듈러설치", "난방모듈러설치", "하부배관", "LLH시공",
-    "연도시공", "외부연도마감", "드레인호스", "NCC판넬", "완료사진", "직접입력"
-]
-VENT_OPTIONS = ["직접입력"]
+# 입력 요약 표시
+st.caption(f"🧭 현재 현장 주소: {site_addr or '-'}")
 
-# 사진 영역
-st.markdown("#### 현장 사진")
+# ─────────────────────────────────────────
+# 사진 카드 렌더링 (가로 한 줄: [삭제][번호][사진버튼][드롭다운][직접입력])
+# ─────────────────────────────────────────
+to_delete_ids = []
 
-# 동적 사진 블록 생성 (기본 1, 최대 9)
-max_photos = 9
-for i in range(st.session_state.photo_count):
-    with st.container(border=True):
-        head = st.columns([0.2, 1.2, 1.8, 2.0])
-        # 삭제 체크박스
-        with head[0]:
-            st.checkbox("", key=f"del_{i}")
-            st.caption(f"{i+1}")
-        # 드롭다운 + 직접입력
-        with head[1]:
-            options = CASCADE_OPTIONS if mode == "캐스케이드" else VENT_OPTIONS
-            current_choice = st.session_state.labels.get(i, {}).get("choice", options[0])
-            choice = st.selectbox("항목", options=options, key=f"sel_{i}",
-                                  index=(options.index(current_choice) if current_choice in options else 0))
-            custom_default = st.session_state.labels.get(i, {}).get("custom", "")
-            custom_label = ""
-            if choice == "직접입력":
-                custom_label = st.text_input("항목명 직접입력", value=custom_default,
-                                             key=f"custom_{i}", placeholder="예: 배기후드 시공 전·후")
-            st.session_state.labels[i] = {"choice": choice, "custom": custom_label}
+for idx, item in enumerate(st.session_state.items):
+    item_id = item["id"]
+    col_del, col_no, col_btn, col_sel, col_custom = st.columns([0.5, 0.6, 2.0, 2.0, 2.2])
 
-        # 파일 업로더 (단일 컨트롤)
-        with head[2]:
-            st.write("")  # 줄맞춤
-            st.file_uploader(
-                "📷 사진 (촬영/보관함/파일)",
-                type=["jpg", "jpeg", "png"],
-                key=f"fu_{i}",
-                accept_multiple_files=False
-            )
+    with col_del:
+        del_ck = st.checkbox(" ", key=f"del_{item_id}", help="삭제 선택")
+        if del_ck:
+            to_delete_ids.append(item_id)
 
-        # 미리보기(선택 시)
-        with head[3]:
-            uploaded = st.session_state.get(f"fu_{i}")
-            if uploaded is not None:
-                try:
-                    img = Image.open(uploaded)
-                    st.image(img, caption="미리보기", use_container_width=True)
-                except Exception:
-                    st.caption("이미지 미리보기를 표시할 수 없습니다.")
+    with col_no:
+        st.markdown(f"**{idx+1}.**")  # 순번 표시(자동 재부여)
+
+    with col_btn:
+        up = st.file_uploader("📷 사진 (촬영/보관함/파일)", type=["jpg", "jpeg", "png"], key=f"fu_{item_id}")
+        # 미리보기
+        if up is not None:
+            try:
+                img = Image.open(up)
+                st.image(img, use_container_width=True)
+            except Exception:
+                st.caption("미리보기를 표시할 수 없습니다.")
+
+    with col_sel:
+        default_choice = item.get("choice", options[0])
+        choice = st.selectbox("항목", options=options, key=f"sel_{item_id}",
+                              index=(options.index(default_choice) if default_choice in options else 0))
+        item["choice"] = choice  # 상태 갱신
+
+    with col_custom:
+        custom_val = item.get("custom", "")
+        if item["choice"] == "직접입력":
+            custom_val = st.text_input("항목명 직접입력", value=custom_val, key=f"custom_{item_id}", placeholder="예: 배기후드 시공 전·후")
+            item["custom"] = custom_val
+        else:
+            # 다른 항목 선택 시 커스텀은 숨기되 값은 유지
+            st.caption("—")
 
 # 하단 제어 버튼
 cc1, cc2, cc3 = st.columns([1,1,6])
 with cc1:
     if st.button("➕ 사진 추가", use_container_width=True):
-        if st.session_state.photo_count < max_photos:
-            st.session_state.photo_count += 1
+        if len(st.session_state.items) < MAX_PHOTOS:
+            st.session_state.items.append({"id": str(uuid.uuid4()),
+                                           "choice": options[0],
+                                           "custom": ""})
         else:
             st.warning("최대 9장까지 추가할 수 있습니다.")
 with cc2:
     if st.button("🗑 선택 삭제", use_container_width=True):
-        to_delete = [i for i in range(st.session_state.photo_count) if st.session_state.get(f"del_{i}", False)]
-        if not to_delete:
+        if not to_delete_ids:
             st.warning("삭제할 사진을 체크해 주세요.")
         else:
-            keep = [i for i in range(st.session_state.photo_count) if i not in to_delete]
-            reindex_after_delete(keep)
+            st.session_state.items = [it for it in st.session_state.items if it["id"] not in to_delete_ids]
+            # 체크박스/업로드 키는 ID기반이므로 남은 항목은 그대로, 번호는 자동 재부여됨
             st.success("선택한 사진을 삭제했습니다.")
 
 # 제출 버튼
@@ -376,31 +339,29 @@ submitted = st.button("📄 PDF 생성")
 
 if submitted:
     try:
-        # 라벨/이미지 수집
         titled_images: List[Tuple[str, Optional[Image.Image]]] = []
-        for i in range(st.session_state.photo_count):
-            # 라벨 결정
-            choice = st.session_state.labels.get(i, {}).get("choice", "직접입력")
-            custom = st.session_state.labels.get(i, {}).get("custom", "")
+
+        for item in st.session_state.items:
+            item_id = item["id"]
+            choice = item.get("choice", "직접입력")
+            custom = item.get("custom", "")
             label = custom.strip() if (choice == "직접입력" and custom.strip()) else choice
 
             pil_img = None
-            uploaded = st.session_state.get(f"fu_{i}")
-            if uploaded is not None:
+            up = st.session_state.get(f"fu_{item_id}")
+            if up is not None:
                 try:
-                    pil_img = Image.open(uploaded).convert("RGB")
+                    pil_img = Image.open(up).convert("RGB")
+                    pil_img = enforce_aspect_pad(pil_img, 4/3)
                 except Exception:
                     pil_img = None
-
-            if pil_img is not None:
-                pil_img = enforce_aspect_pad(pil_img, 4/3)
 
             titled_images.append((label, pil_img))
 
         # 제목 결정
         doc_title = "캐스케이드 기성 청구 양식" if mode == "캐스케이드" else "환기 기성 청구 양식"
-
         pdf_bytes = build_pdf(doc_title, site_addr, titled_images)
+
         safe_site = sanitize_filename(site_addr if site_addr.strip() else doc_title)
         st.success("PDF 생성 완료! 아래 버튼으로 다운로드하세요.")
         st.download_button(
@@ -416,11 +377,11 @@ if submitted:
 with st.expander("도움말 / 안내"):
     st.markdown(
         """
-- **사진 버튼** 하나로 *사진보관함/사진찍기/파일선택* 선택 가능합니다(모바일 브라우저별 UI 상이).
-- **선택 삭제**: 각 사진 카드 왼쪽 체크 → **🗑 선택 삭제**.
-- **캐스케이드**: 드롭다운에서 항목 선택 또는 **직접입력** 사용.
-- **환기**: **직접입력**만 제공.
-- 모든 사진은 **4:3 비율(패딩)** 로 보정, PDF 내 자동 리사이즈/압축.
-- 한글 폰트는 저장소 루트에 `NanumGothic.ttf`를 두면 깨지지 않습니다.
+- **가로 배치**: [삭제체크] [번호] [사진 버튼] [항목 드롭다운] [직접입력].
+- **선택 삭제**: 삭제할 항목에 체크 → **🗑 선택 삭제** (중간 번호가 비지 않고 자동 재번호).
+- **현장 주소**: 화면 상단에 입력하고, PDF 상단 메타에도 반영됩니다.
+- **사진 업로드**: 하나의 사진 버튼으로 *사진보관함/사진찍기/파일선택* 제공(모바일 브라우저 UI에 따라 다소 차이).
+- **비율 보정**: 모든 사진은 **4:3 비율(패딩)** 로 보정, PDF 내 자동 리사이즈/압축.
+- **한글 폰트**: 저장소 루트에 `NanumGothic.ttf`를 두면 PDF 내 한글 깨짐 방지.
         """
     )
