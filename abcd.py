@@ -1,3 +1,6 @@
+import os
+os.system("pip install streamlit reportlab pillow")
+
 # -*- coding: utf-8 -*-
 # 캐스케이드/환기 기성 청구 양식 - 동적 사진(최대 9컷), 3xN 그리드 PDF
 
@@ -379,3 +382,4 @@ with st.expander("도움말 / 안내"):
 - **한글 깨짐**: 실행 폴더에 `NanumGothic.ttf`를 두면 PDF 내 한글이 깨지지 않습니다(윈도우는 `맑은고딕` 자동 시도).
         """
     )
+
