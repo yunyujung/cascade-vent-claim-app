@@ -1,11 +1,9 @@
 import os
-# 필요 패키지 (requirements.txt 쓰면 이 줄은 생략 가능)
+# 필요 패키지 (requirements.txt 쓰면 이 줄 생략 가능)
 os.system("pip install -q streamlit reportlab pillow")
 
 # -*- coding: utf-8 -*-
-# 캐스케이드/환기 기성 청구 양식
-# - UI: 한 줄(체크박스 · '항목' 라벨 · 드롭다운) + 아래 사진 업로드/미리보기
-# - PDF: 제목/현장주소 표/테두리 유지, 업로드된 사진까지만 3열 카드로 출력(빈칸 없음)
+# 캐스케이드/환기 기성 청구 양식 (모바일 한 줄 고정 · PDF 좌상단부터 차곡 배치)
 
 import io, re, unicodedata, uuid
 from typing import List, Tuple, Optional
@@ -15,7 +13,7 @@ from PIL import Image
 
 # PDF
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer, Image as RLImage
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer as RLSpacer, Image as RLImage
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
@@ -26,16 +24,29 @@ from reportlab.pdfbase.ttfonts import TTFont
 # ───────────────────────────────
 st.set_page_config(page_title="캐스케이드/환기 기성 청구 양식", layout="wide")
 
-# 모바일에서도 컬럼이 절대 줄바꿈되지 않도록 강제 (한 줄 유지)
+# 모바일에서도 ‘체크박스 · 항목 · 드롭다운’ 한 줄 고정 + 가로 스크롤 방지
 st.markdown("""
 <style>
-/* 모든 가로 블록(=columns 컨테이너)의 줄바꿈 방지 */
-div[data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; }
-/* 각 column의 최소폭 축소 허용 + 수직정렬 중앙 */
+html, body { overflow-x: hidden !important; }
+
+/* columns 컨테이너 간격 축소 & 줄바꿈 금지 */
+div[data-testid="stHorizontalBlock"] { gap: .25rem !important; flex-wrap: nowrap !important; }
+
+/* 각 column은 최소폭 제약 제거 + 내부 컴포넌트 정렬 */
 div[data-testid="column"] { min-width: 0 !important; }
-div[data-testid="column"] > div { display: flex; align-items: center; gap: .5rem; }
-/* selectbox 라벨 여백 최소화 */
-div[data-baseweb="select"] { margin-top: 0 !important; }
+div[data-testid="column"] > div { width: 100% !important; display: flex; align-items: center; gap: .5rem; }
+
+/* selectbox 최소폭 제거·한 줄 맞춤 */
+div[data-baseweb="select"] { min-width: 0 !important; width: 100% !important; }
+
+/* 라벨 */
+.label-inline { white-space: nowrap; font-weight: 600; }
+
+/* 더 좁은 화면에서 간격 더 줄이기 */
+@media (max-width: 480px){
+  div[data-testid="stHorizontalBlock"] { gap: .2rem !important; }
+  .label-inline { font-size: 0.9rem; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -95,7 +106,7 @@ def _pil_to_bytesio(img: Image.Image, quality=85) -> io.BytesIO:
     return buf
 
 # ───────────────────────────────
-# PDF 빌더 (3열 카드, 테두리/제목/주소 유지, 빈칸 없음)
+# PDF 빌더 (3열 카드, 좌상단부터 순차 배치, 빈칸·문구 없음)
 # ───────────────────────────────
 def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Image.Image]]) -> bytes:
     buf = io.BytesIO()
@@ -106,9 +117,11 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Image.Image
                             leftMargin=MARGIN, rightMargin=MARGIN,
                             title=doc_title)
     story = []
+
     # 제목
     story.append(Paragraph(doc_title, styles["title"]))
-    story.append(Spacer(1, 4))
+    story.append(RLSpacer(1, 4))
+
     # 현장 주소 표 (테두리 유지)
     meta_tbl = Table(
         [[Paragraph("현장 주소", styles["cell"]), Paragraph(site_addr.strip() or "-", styles["cell"])]],
@@ -124,13 +137,13 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Image.Image
         ("BOTTOMPADDING", (0,0), (-1,-1), 3),
     ]))
     story.append(meta_tbl)
-    story.append(Spacer(1, 8))
+    story.append(RLSpacer(1, 8))
 
     if not items:
         doc.build(story)
         return buf.getvalue()
 
-    # 카드 크기
+    # 카드 크기/제한
     col_count = 3
     usable_width = PAGE_W - 2*MARGIN
     col_width = usable_width / col_count
@@ -140,9 +153,10 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Image.Image
     IMAGE_MAX_W = col_width - 8
 
     # 카드 생성 (업로드된 사진만)
-    cells = []
+    cards = []
     for label, pil_img in items:
         pil_img = enforce_aspect_pad(pil_img, 4/3)
+
         # 크기 조정(너비 기준)
         target_w = IMAGE_MAX_W
         target_h = target_w * 3 / 4
@@ -168,11 +182,33 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Image.Image
             ("TOPPADDING", (0,0), (-1,-1), 2),
             ("BOTTOMPADDING", (0,0), (-1,-1), 2),
         ]))
-        cells.append(card)
+        cards.append(card)
 
-    # 3열 그리드(빈칸 없이)
-    rows = [cells[i:i+3] for i in range(0, len(cells), 3)]
-    grid_tbl = Table(rows, colWidths=[col_width]*3, rowHeights=[ROW_HEIGHT]*len(rows))
+    # 3열 그리드. 마지막 줄의 남는 칸은 "보이지 않는 자리"로 채워 좌측 정렬 유지
+    rows = []
+    for i in range(0, len(cards), col_count):
+        row_cards = cards[i:i+col_count]
+        if len(row_cards) < col_count:
+            # 자리만 차지하는 보이지 않는 셀(Spacer) 추가 → 가운데로 몰리는 것 방지
+            for _ in range(col_count - len(row_cards)):
+                row_cards.append(RLSpacer(1, ROW_HEIGHT))
+        rows.append(row_cards)
+
+    grid_tbl = Table(
+        rows,
+        colWidths=[col_width]*col_count,
+        rowHeights=[ROW_HEIGHT]*len(rows),
+        hAlign="LEFT"  # 안전하게 좌측 정렬
+    )
+    # 외곽 그리드는 테두리 없음(카드 자체가 테두리 가짐)
+    grid_tbl.setStyle(TableStyle([
+        ("LEFTPADDING", (0,0), (-1,-1), 0),
+        ("RIGHTPADDING", (0,0), (-1,-1), 0),
+        ("TOPPADDING", (0,0), (-1,-1), 0),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+        ("ALIGN", (0,0), (-1,-1), "LEFT"),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+    ]))
     story.append(grid_tbl)
 
     doc.build(story)
@@ -198,18 +234,18 @@ mode = st.radio("양식 선택", ["캐스케이드", "환기"], horizontal=True)
 options = CASCADE_OPTIONS if mode == "캐스케이드" else VENT_OPTIONS
 site_addr = st.text_input("현장 주소", "")
 
-st.caption("행 구성: **[체크박스]  [항목] [드롭다운]**  → (아래) 사진 등록/미리보기 — 모바일에서도 한 줄로 유지")
+st.caption("행 구성: **[체크박스]  [항목] [드롭다운]**  → (아래) 사진 등록/미리보기 — 모바일에서도 한 줄 고정, 가로 스크롤 없음")
 
 # ───────────────────────────────
 # 항목 UI (한 줄: 체크박스 · '항목' 라벨 · 드롭다운 / 아래: 사진 업로드 + 미리보기)
 # ───────────────────────────────
 for p in st.session_state.photos:
-    # 한 줄 (절대 줄바꿈 X)
-    row = st.columns([0.5, 0.7, 3.5])
+    # 한 줄 (모바일 줄바꿈 금지)
+    row = st.columns([0.35, 0.7, 3.0])  # 좁은 화면에서도 넘치지 않게 타이트한 비율
     with row[0]:
         p["checked"] = st.checkbox("", key=f"chk_{p['id']}", value=p.get("checked", False))
     with row[1]:
-        st.markdown("**항목**")
+        st.markdown('<span class="label-inline">항목</span>', unsafe_allow_html=True)
     with row[2]:
         p["choice"] = st.selectbox(label="", options=options, key=f"sel_{p['id']}")
         if p["choice"] == "직접입력":
