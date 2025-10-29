@@ -1,8 +1,8 @@
 import os
-os.system("pip install streamlit reportlab pillow")
+os.system("pip install streamlit reportlab pillow xlsxwriter")
 
 # -*- coding: utf-8 -*-
-# 캐스케이드/환기 기성 청구 양식 - 동적 사진(최대 9컷), 3xN 그리드 PDF (ID기반 관리, items 충돌 수정)
+# 캐스케이드/환기 기성 청구 양식 - 가로 한줄 UI + PDF/엑셀(1페이지 인쇄) 출력
 
 import io
 import re
@@ -14,7 +14,7 @@ from typing import List, Tuple, Optional
 import streamlit as st
 from PIL import Image
 
-# ReportLab
+# ReportLab (PDF)
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer, Image as RLImage
 from reportlab.lib import colors
@@ -124,7 +124,7 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Im
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
         topMargin=TOP_BOTTOM_MARGIN, bottomMargin=TOP_BOTTOM_MARGIN,
-        leftMargin=LEFT_RIGHT_MARGIN, rightMargin=LEFT_RIGHT_MARGIN,
+        leftMargin=LEFT_RIGHT_MARGIN, rightMargin=RIGHT_MARGIN := LEFT_RIGHT_MARGIN,
         title=doc_title
     )
 
@@ -236,7 +236,74 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Im
     return buf.getvalue()
 
 # ─────────────────────────────────────────
-# 세션 상태 (items 키 충돌 방지 → photos 사용)
+# 엑셀(1페이지 인쇄) 빌더
+# ─────────────────────────────────────────
+def build_excel_onepage(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Image.Image]]]) -> bytes:
+    import xlsxwriter
+
+    output = io.BytesIO()
+    wb = xlsxwriter.Workbook(output, {'in_memory': True})
+    ws = wb.add_worksheet("기성청구")
+
+    # 인쇄 설정: A4, 가로, 여백 작게, 1페이지에 맞추기
+    ws.set_paper(9)                 # A4
+    ws.set_landscape()
+    ws.set_margins(left=0.3, right=0.3, top=0.5, bottom=0.5)
+    ws.fit_to_pages(1, 1)
+    ws.center_horizontally()
+
+    # 서식
+    title_fmt = wb.add_format({'bold': True, 'font_size': 16, 'align': 'center'})
+    label_fmt = wb.add_format({'bold': True, 'font_size': 10, 'align': 'left', 'valign': 'vcenter', 'border': 1})
+    text_fmt  = wb.add_format({'font_size': 10, 'align': 'left', 'valign': 'vcenter', 'border': 1})
+    cap_fmt   = wb.add_format({'font_size': 9,  'align': 'center'})
+
+    # 열 폭/행 높이
+    # 3열 그리드(이미지 3개 한 줄) 가정: 각 이미지 폭=~25, 캡션 줄 별도
+    ws.set_column(0, 8, 14)  # 넉넉한 폭
+
+    # 제목
+    ws.merge_range(0, 0, 0, 8, doc_title, title_fmt)
+    # 현장 주소
+    ws.merge_range(2, 0, 2, 1, "현장 주소", label_fmt)
+    ws.merge_range(2, 2, 2, 8, site_addr or "-", text_fmt)
+
+    # 이미지/캡션 배치
+    row = 4
+    col_per_img = 3   # 각 이미지가 3열 차지(가독성)
+    images_per_row = 3
+    thumb_w = 360     # 픽셀 기준(대략)
+    thumb_h = int(thumb_w * 0.75)
+
+    r = 0; c = 0
+    for label, pil_img in items[:9]:
+        # 셀 위치 계산
+        col = c * col_per_img
+        # 캡션
+        ws.merge_range(row, col, row, col + col_per_img - 1, label, cap_fmt)
+        # 이미지
+        if pil_img:
+            # 4:3 패딩 + 축소
+            img = enforce_aspect_pad(pil_img, 4/3)
+            img = _resize_for_pdf(img, max_px=1200)
+            bio = io.BytesIO()
+            img.save(bio, format="PNG")
+            bio.seek(0)
+            # 약간의 오프셋으로 캡션 아래에
+            ws.insert_image(row + 1, col, "img.png", {'image_data': bio, 'x_scale': 0.5, 'y_scale': 0.5})
+        # 다음 칸으로
+        c += 1
+        if c >= images_per_row:
+            c = 0
+            # 이미지 한 줄(캡션+이미지 높이)을 위해 여러 행 내려줌
+            row += 18
+
+    wb.close()
+    output.seek(0)
+    return output.getvalue()
+
+# ─────────────────────────────────────────
+# 세션 상태
 # ─────────────────────────────────────────
 PHOTOS_KEY = "photos"
 
@@ -259,7 +326,7 @@ MAX_PHOTOS = 9
 # 상단 UI
 # ─────────────────────────────────────────
 st.markdown("### 캐스케이드/환기 기성 청구 양식")
-st.info("모바일에서 **사진 버튼**을 누르면 *사진보관함/사진찍기/파일선택*이 뜹니다. 모든 사진은 4:3 비율로 자동 보정됩니다.")
+st.info("요청하신 레이아웃: **[사진 버튼] [번호] [항목 드롭다운]** 한 줄, 그 아래 미리보기. 모든 사진은 4:3 비율로 보정됩니다.")
 
 # 모드 선택
 mode = st.radio("양식 종류 선택", options=["캐스케이드", "환기"], horizontal=True,
@@ -271,116 +338,126 @@ options = CASCADE_OPTIONS if mode == "캐스케이드" else VENT_OPTIONS
 site_addr = st.text_input("현장 주소", value=st.session_state.get("site_addr", ""),
                           placeholder="예: 서울특별시 ○○구 ○○로 12, 101동 101호")
 st.session_state.site_addr = site_addr
-
-# 입력 요약 표시
 st.caption(f"🧭 현재 현장 주소: {site_addr or '-'}")
 
 # ─────────────────────────────────────────
-# 사진 카드 렌더링 (가로 한 줄: [삭제][번호][사진버튼][드롭다운][직접입력])
+# 사진 카드 (가로 한 줄: [사진버튼] [번호] [드롭다운] → 아래 미리보기)
 # ─────────────────────────────────────────
 photos: List[dict] = st.session_state[PHOTOS_KEY]
+
+# 선택 삭제용 ID 리스트
 to_delete_ids = []
 
 for idx, item in enumerate(photos):
     item_id = item["id"]
-    col_del, col_no, col_btn, col_sel, col_custom = st.columns([0.5, 0.6, 2.0, 2.0, 2.2])
 
-    with col_del:
-        del_ck = st.checkbox(" ", key=f"del_{item_id}", help="삭제 선택")
-        if del_ck:
-            to_delete_ids.append(item_id)
-
-    with col_no:
-        st.markdown(f"**{idx+1}.**")
-
-    with col_btn:
+    # 한 줄(가로) 배치: 버튼, 번호, 드롭다운, (직접입력은 우측에 필요 시)
+    row_cols = st.columns([2.2, 0.6, 2.2, 2.0, 1.0])
+    with row_cols[0]:
         up = st.file_uploader("📷 사진 (촬영/보관함/파일)", type=["jpg", "jpeg", "png"], key=f"fu_{item_id}")
-        if up is not None:
-            try:
-                img = Image.open(up)
-                st.image(img, use_container_width=True)
-            except Exception:
-                st.caption("미리보기를 표시할 수 없습니다.")
-
-    with col_sel:
+    with row_cols[1]:
+        st.markdown(f"**{idx+1}.**")
+    with row_cols[2]:
         default_choice = item.get("choice", options[0])
         choice = st.selectbox("항목", options=options, key=f"sel_{item_id}",
                               index=(options.index(default_choice) if default_choice in options else 0))
         item["choice"] = choice
-
-    with col_custom:
+    with row_cols[3]:
         custom_val = item.get("custom", "")
         if item["choice"] == "직접입력":
-            custom_val = st.text_input("항목명 직접입력", value=custom_val, key=f"custom_{item_id}", placeholder="예: 배기후드 시공 전·후")
+            custom_val = st.text_input("직접입력", value=custom_val, key=f"custom_{item_id}", placeholder="예: 배기후드 시공 전·후")
             item["custom"] = custom_val
         else:
-            st.caption("—")
+            st.caption(" ")
+    with row_cols[4]:
+        if st.button("삭제", key=f"delbtn_{item_id}"):
+            to_delete_ids.append(item_id)
 
-# 하단 제어 버튼
-cc1, cc2, cc3 = st.columns([1,1,6])
+    # 아래 줄: 미리보기
+    if up is not None:
+        try:
+            img = Image.open(up)
+            st.image(img, use_container_width=True, caption="미리보기")
+        except Exception:
+            st.caption("미리보기를 표시할 수 없습니다.")
+
+# 추가/삭제 버튼
+cc1, cc2, cc3, cc4 = st.columns([1,1,1,6])
 with cc1:
-    if st.button("➕ 사진 추가", use_container_width=True):
-        if len(st.session_state[PHOTOS_KEY]) < MAX_PHOTOS:
-            st.session_state[PHOTOS_KEY].append({"id": str(uuid.uuid4()),
-                                                 "choice": options[0],
-                                                 "custom": ""})
-        else:
-            st.warning("최대 9장까지 추가할 수 있습니다.")
+    if len(photos) < MAX_PHOTOS and st.button("➕ 사진 추가", use_container_width=True):
+        st.session_state[PHOTOS_KEY].append({"id": str(uuid.uuid4()), "choice": options[0], "custom": ""})
 with cc2:
     if st.button("🗑 선택 삭제", use_container_width=True):
         if not to_delete_ids:
-            st.warning("삭제할 사진을 체크해 주세요.")
+            st.warning("위의 각 줄 오른쪽 '삭제' 버튼을 눌러 선택해 주세요.")
         else:
             st.session_state[PHOTOS_KEY] = [it for it in st.session_state[PHOTOS_KEY] if it["id"] not in to_delete_ids]
             st.success("선택한 사진을 삭제했습니다.")
+with cc3:
+    if st.button("🧹 전체 초기화", use_container_width=True):
+        st.session_state[PHOTOS_KEY] = [{"id": str(uuid.uuid4()), "choice": options[0], "custom": ""}]
+        st.success("초기화했습니다.")
 
-# 제출 버튼
-submitted = st.button("📄 PDF 생성")
+# 제출 버튼들
+c_pdf, c_xlsx, _ = st.columns([1,1,6])
+with c_pdf:
+    gen_pdf = st.button("📄 PDF 생성")
+with c_xlsx:
+    gen_xlsx = st.button("📗 엑셀(1페이지 인쇄용) 생성")
 
-if submitted:
+# 공통 수집 함수
+def collect_items_for_output() -> List[Tuple[str, Optional[Image.Image]]]:
+    out: List[Tuple[str, Optional[Image.Image]]] = []
+    for item in st.session_state[PHOTOS_KEY]:
+        item_id = item["id"]
+        choice = item.get("choice", "직접입력")
+        custom = item.get("custom", "")
+        label = custom.strip() if (choice == "직접입력" and custom.strip()) else choice
+        pil_img = None
+        up = st.session_state.get(f"fu_{item_id}")
+        if up is not None:
+            try:
+                pil_img = Image.open(up).convert("RGB")
+                pil_img = enforce_aspect_pad(pil_img, 4/3)
+            except Exception:
+                pil_img = None
+        out.append((label, pil_img))
+    return out
+
+if gen_pdf:
     try:
-        titled_images: List[Tuple[str, Optional[Image.Image]]] = []
-
-        for item in st.session_state[PHOTOS_KEY]:
-            item_id = item["id"]
-            choice = item.get("choice", "직접입력")
-            custom = item.get("custom", "")
-            label = custom.strip() if (choice == "직접입력" and custom.strip()) else choice
-
-            pil_img = None
-            up = st.session_state.get(f"fu_{item_id}")
-            if up is not None:
-                try:
-                    pil_img = Image.open(up).convert("RGB")
-                    pil_img = enforce_aspect_pad(pil_img, 4/3)
-                except Exception:
-                    pil_img = None
-
-            titled_images.append((label, pil_img))
-
-        doc_title = "캐스케이드 기성 청구 양식" if mode == "캐스케이드" else "환기 기성 청구 양식"
-        pdf_bytes = build_pdf(doc_title, site_addr, titled_images)
-
+        items = collect_items_for_output()
+        doc_title = "캐스케이드 기성 청구 양식" if st.session_state.mode == "캐스케이드" else "환기 기성 청구 양식"
+        pdf_bytes = build_pdf(doc_title, site_addr, items)
         safe_site = sanitize_filename(site_addr if site_addr.strip() else doc_title)
         st.success("PDF 생성 완료! 아래 버튼으로 다운로드하세요.")
-        st.download_button(
-            label="⬇️ 기성 청구 양식(PDF) 다운로드",
-            data=pdf_bytes,
-            file_name=f"{safe_site}_기성청구양식.pdf",
-            mime="application/pdf",
-        )
+        st.download_button("⬇️ PDF 다운로드", data=pdf_bytes,
+                           file_name=f"{safe_site}_기성청구양식.pdf", mime="application/pdf")
     except Exception as e:
-        st.error("PDF 생성 중 오류가 발생했습니다. 아래 상세 오류를 확인하세요.")
+        st.error("PDF 생성 중 오류가 발생했습니다.")
+        st.exception(e)
+
+if gen_xlsx:
+    try:
+        items = collect_items_for_output()
+        doc_title = "캐스케이드 기성 청구 양식" if st.session_state.mode == "캐스케이드" else "환기 기성 청구 양식"
+        xlsx_bytes = build_excel_onepage(doc_title, site_addr, items)
+        safe_site = sanitize_filename(site_addr if site_addr.strip() else doc_title)
+        st.success("엑셀 생성 완료! 아래 버튼으로 다운로드하세요.")
+        st.download_button("⬇️ 엑셀(1페이지) 다운로드", data=xlsx_bytes,
+                           file_name=f"{safe_site}_기성청구양식_1page.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except Exception as e:
+        st.error("엑셀 생성 중 오류가 발생했습니다.")
         st.exception(e)
 
 with st.expander("도움말 / 안내"):
     st.markdown(
         """
-- **가로 배치**: [삭제체크] [번호] [사진 버튼] [항목 드롭다운] [직접입력].
-- **선택 삭제**: 삭제할 항목에 체크 → **🗑 선택 삭제** (중간 번호가 비지 않고 자동 재번호).
-- **현장 주소**: 입력값은 화면 상단에 표시되고, PDF 상단 메타에도 반영됩니다.
-- **사진 업로드**: 하나의 사진 버튼으로 *사진보관함/사진찍기/파일선택* 제공(모바일 브라우저 UI에 따라 다소 차이).
-- **비율 보정**: 모든 사진은 **4:3 비율(패딩)** 로 보정, PDF 내 자동 리사이즈/압축.
+- **가로 한 줄**: `[사진 버튼]  [번호]  [항목 드롭다운]  [직접입력(필요 시)]  [삭제]`  
+  바로 **아래 줄에 미리보기**가 표시됩니다.
+- **엑셀 1페이지 인쇄**: A4/가로/여백 축소/한 페이지에 맞추기(가로세로 1x1)로 설정되어, 바로 1장으로 출력됩니다.
+- **사진 비율**: 모두 **4:3 (패딩)** 으로 보정되어 PDF/엑셀에 안정적으로 배치됩니다.
 - **한글 폰트**: 저장소 루트에 `NanumGothic.ttf`를 두면 PDF 내 한글 깨짐 방지.
         """
     )
