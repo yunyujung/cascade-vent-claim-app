@@ -2,10 +2,9 @@ import os
 os.system("pip install streamlit reportlab pillow")
 
 # -*- coding: utf-8 -*-
-# 캐스케이드/환기 기성 청구 양식 - 버튼 1회 작동 / 테두리 유지 / 제목 유지
+# 캐스케이드/환기 기성 청구 양식 - 버튼 1회 작동 / 테두리 유지 / 제목 유지 / 체크박스 위치 조정
 
-import io, re, unicodedata, uuid
-from math import ceil
+import io, re, unicodedata, uuid, os
 from typing import List, Tuple, Optional
 import streamlit as st
 from PIL import Image
@@ -155,63 +154,88 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Im
 # ───────────────────────────────
 if "photos" not in st.session_state:
     st.session_state.photos = [{"id": str(uuid.uuid4()), "choice": "장비납품", "custom": "", "checked": False, "img": None}]
-if "pdf_ready" not in st.session_state:
-    st.session_state.pdf_ready = False
 if "pdf_bytes" not in st.session_state:
     st.session_state.pdf_bytes = None
 
-mode = st.radio("양식 선택", ["캐스케이드", "환기"], horizontal=True)
+mode = st.radio("양식 선택", ["캐스케이드", "환기"], horizontal=True, key="mode_radio")
 CASCADE_OPTIONS = ["장비납품", "급탕모듈러설치", "난방모듈러설치", "하부배관", "LLH시공", "연도시공", "외부연도마감", "드레인호스", "NCC판넬", "완료사진", "직접입력"]
 VENT_OPTIONS = ["직접입력"]
 options = CASCADE_OPTIONS if mode == "캐스케이드" else VENT_OPTIONS
-site_addr = st.text_input("현장 주소", "")
+site_addr = st.text_input("현장 주소", "", key="site_addr")
+
+st.divider()
 
 # ───────────────────────────────
-# UI: 체크박스 / 번호 / 드롭다운 + 사진
+# UI: 드롭다운(항목) + 체크박스(오른쪽) + 사진 업로드
+#  - 번호 제거
+#  - 같은 줄에 배치
 # ───────────────────────────────
-for idx, p in enumerate(st.session_state.photos):
-    cols = st.columns([0.4, 0.4, 2.2])
-    with cols[0]:
-        p["checked"] = st.checkbox("", key=f"chk_{p['id']}", value=p.get("checked", False))
-    with cols[1]:
-        st.markdown(f"**{idx+1}.**")
-    with cols[2]:
-        p["choice"] = st.selectbox("항목", options, key=f"sel_{p['id']}")
-        if p["choice"] == "직접입력":
-            p["custom"] = st.text_input("직접입력", value=p["custom"], key=f"custom_{p['id']}")
-    upload = st.file_uploader("사진 등록", type=["jpg", "jpeg", "png"], key=f"up_{p['id']}")
-    if upload:
-        p["img"] = Image.open(upload).convert("RGB")
-    if p["img"]:
-        st.image(p["img"], use_container_width=True)
+for p in st.session_state.photos:
+    row = st.container(border=True)
+    with row:
+        c1, c2 = st.columns([4, 1], vertical_alignment="center")
+        with c1:
+            p["choice"] = st.selectbox(
+                "항목",
+                options,
+                key=f"sel_{p['id']}",
+                index=(options.index(p["choice"]) if p.get("choice") in options else 0),
+                label_visibility="collapsed",
+            )
+            if p["choice"] == "직접입력":
+                p["custom"] = st.text_input("직접입력", value=p.get("custom", ""), key=f"custom_{p['id']}", placeholder="항목 직접 입력")
+        with c2:
+            # 항목 오른쪽에 체크박스 배치
+            p["checked"] = st.checkbox("선택", key=f"chk_{p['id']}", value=p.get("checked", False))
+        # 사진 업로더 (아래 줄)
+        upload = st.file_uploader("사진 등록", type=["jpg", "jpeg", "png"], key=f"up_{p['id']}")
+        if upload:
+            p["img"] = Image.open(upload).convert("RGB")
+        if p["img"]:
+            st.image(p["img"], use_container_width=True)
+
+st.divider()
 
 # ───────────────────────────────
 # 추가 / 삭제 / PDF 생성
+# - 1회 클릭 동작 보장: 고유 key, 상태 즉시 반영
 # ───────────────────────────────
-c1, c2, c3 = st.columns([1,1,2])
-with c1:
-    if st.button("➕ 추가"):
-        st.session_state.photos.append({"id": str(uuid.uuid4()), "choice": options[0], "custom": "", "checked": False, "img": None})
-with c2:
-    if st.button("🗑 선택 삭제"):
+btn_c1, btn_c2, btn_c3 = st.columns([1, 1, 2])
+
+with btn_c1:
+    if st.button("➕ 추가", key="add_row", use_container_width=True):
+        st.session_state.photos.append({
+            "id": str(uuid.uuid4()),
+            "choice": options[0],
+            "custom": "",
+            "checked": False,
+            "img": None
+        })
+
+with btn_c2:
+    if st.button("🗑 선택 삭제", key="del_rows", use_container_width=True):
         st.session_state.photos = [p for p in st.session_state.photos if not p["checked"]]
+
+download_area = st.empty()
+with btn_c3:
+    if st.button("📄 PDF 생성", type="primary", key="make_pdf", use_container_width=True):
+        valid_items = []
         for p in st.session_state.photos:
-            p["checked"] = False
-with c3:
-    if st.button("📄 PDF 생성", type="primary"):
-        valid_items = [(p["custom"] if p["choice"] == "직접입력" and p["custom"].strip() else p["choice"], p["img"])
-                       for p in st.session_state.photos if p["img"]]
+            if p.get("img") is not None:
+                label = p["custom"].strip() if (p["choice"] == "직접입력" and p.get("custom", "").strip()) else p["choice"]
+                valid_items.append((label, p["img"]))
+
         if not valid_items:
             st.warning("📸 사진이 등록된 항목이 없습니다.")
         else:
             pdf_bytes = build_pdf(f"{mode} 기성 청구 양식", site_addr, valid_items)
-            st.session_state.pdf_ready = True
-            st.session_state.pdf_bytes = pdf_bytes
+            st.session_state.pdf_bytes = pdf_bytes  # 상태에 저장 (재실행 후에도 유지)
 
 # ───────────────────────────────
-# PDF 다운로드 버튼 자동 표시
+# PDF 다운로드 버튼 자동 표시(1회 클릭 후 즉시 노출)
 # ───────────────────────────────
-if st.session_state.pdf_ready and st.session_state.pdf_bytes:
+if st.session_state.pdf_bytes:
     fname = f"{sanitize_filename(site_addr)}_{mode}_기성청구.pdf"
-    st.success("✅ PDF 생성 완료! 아래 버튼으로 바로 다운로드하세요.")
-    st.download_button("⬇️ PDF 다운로드", st.session_state.pdf_bytes, file_name=fname, mime="application/pdf")
+    with download_area.container():
+        st.success("✅ PDF 생성 완료! 아래 버튼으로 바로 다운로드하세요.")
+        st.download_button("⬇️ PDF 다운로드", st.session_state.pdf_bytes, file_name=fname, mime="application/pdf", key="dl_pdf", use_container_width=True)
