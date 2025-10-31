@@ -3,10 +3,11 @@ os.system("pip install streamlit reportlab pillow")
 
 # -*- coding: utf-8 -*-
 # 캐스케이드/환기 기성 청구 양식
-# - 추가 버튼 1번으로 즉시 추가 (add_pending 플래그)
-# - 사진 방향 EXIF 기준으로 고정해서 PDF (normalize_orientation)
-# - 드롭다운 눌러도 키보드 안 튀어나오게:
-#   직접입력 text_input을 항상 렌더하고, 필요 없을 땐 disabled
+# - 모바일에서 드롭다운만 눌렀는데 키보드 올라오는 문제 해결:
+#   직접입력 아닐 때는 text_input 자체를 아예 렌더하지 않음
+#   직접입력일 때만 text_input을 렌더하고, 즉시 blur() 처리해서 자동 포커스 빼버림
+# - 추가 버튼 1번 클릭 즉시 추가 (add_pending)
+# - 사진 방향 고정하여 PDF에 넣기
 
 import io, re, unicodedata, uuid, os
 from typing import List, Tuple, Optional
@@ -26,10 +27,12 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
+
 # ───────────────────────────────
 # 페이지 설정
 # ───────────────────────────────
 st.set_page_config(page_title="캐스케이드/환기 기성 청구 양식", layout="wide")
+
 
 # ───────────────────────────────
 # 세션 초기화 / 추가버튼 처리
@@ -51,7 +54,7 @@ if "pdf_bytes" not in st.session_state:
 if "add_pending" not in st.session_state:
     st.session_state.add_pending = False
 
-# add_pending 처리: rerun 후 맨 위에서 실제로 1행만 추가
+# add_pending 처리: rerun 직후 실제로 1행만 추가
 if st.session_state.add_pending:
     st.session_state.photos.append(
         {
@@ -63,6 +66,7 @@ if st.session_state.add_pending:
         }
     )
     st.session_state.add_pending = False  # 플래그 해제
+
 
 # ───────────────────────────────
 # 폰트 등록
@@ -119,7 +123,7 @@ def sanitize_filename(name: str) -> str:
     return re.sub(r"[\\/:*?\"<>|]", "_", name).strip().strip(".") or "output"
 
 def normalize_orientation(img: Image.Image) -> Image.Image:
-    # 앨범에서 보이던 방향 그대로 고정
+    # 앨범에서 보이던 방향 그대로 강제 고정
     try:
         img = ImageOps.exif_transpose(img)
     except Exception:
@@ -146,6 +150,46 @@ def _pil_to_bytesio(img: Image.Image, quality=85) -> io.BytesIO:
     img.save(buf, format="JPEG", quality=quality, optimize=True)
     buf.seek(0)
     return buf
+
+# ───────────────────────────────
+# (중요) 직접입력 필드 렌더 함수
+#   - 직접입력 모드일 때만 실제 text_input 위젯 만들기
+#   - 그리고 JS로 blur() 바로 걸어서 자동 포커스 빼기 (모바일 키보드 강제 닫힘 유도)
+#   - 직접입력 아닐 때는 text_input 자체를 아예 안 그림 → 키보드 절대 안 뜸
+# ───────────────────────────────
+def render_custom_input(p):
+    is_custom_mode = (p["choice"] == "직접입력")
+
+    if is_custom_mode:
+        # 실제 text_input 렌더
+        new_val = st.text_input(
+            "직접입력",
+            value=p.get("custom", ""),
+            key=f"custom_{p['id']}",
+            placeholder="항목 직접 입력",
+        )
+        p["custom"] = new_val
+
+        # JS로 이 input에 자동 포커스된 걸 즉시 blur()시켜서 키보드 내려가게
+        # (id는 Streamlit이 자동생성하므로 직접 지정은 어렵지만,
+        #  document.activeElement.blur() 로 전체 포커스 제거 가능)
+        st.markdown(
+            """
+            <script>
+            setTimeout(function(){
+                if (document && document.activeElement) {
+                    document.activeElement.blur();
+                }
+            }, 50);
+            </script>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        # 직접입력 모드가 아니면 custom 값 유지만 하고 입력칸은 렌더하지 않는다
+        if "custom" not in p:
+            p["custom"] = ""
+
 
 # ───────────────────────────────
 # PDF 생성
@@ -201,7 +245,7 @@ def build_pdf(
 
     cells = []
     for label, pil_img in items:
-        pil_img_fixed = normalize_orientation(pil_img)  # 안전하게 최종 고정
+        pil_img_fixed = normalize_orientation(pil_img)
         pil_img_fixed = enforce_aspect_pad(pil_img_fixed)
 
         bio = _pil_to_bytesio(pil_img_fixed)
@@ -248,6 +292,7 @@ def build_pdf(
     doc.build(story)
     return buf.getvalue()
 
+
 # ───────────────────────────────
 # 상단 공통 입력
 # ───────────────────────────────
@@ -278,11 +323,9 @@ st.divider()
 
 # ───────────────────────────────
 # 항목별 UI
-#   - text_input은 항상 존재하지만
-#     직접입력 아닐 때는 disabled=True라서 포커스/키보드 안 뜸
-#   - 직접입력일 때만 disabled=False라 실제로 입력 가능
-#   - 이렇게 하면 selectbox 눌러도 새 input이 "생성"되지 않아서
-#     모바일이 키보드를 안 올림
+#   - selectbox로 항목 선택
+#   - 직접입력일 경우에만 실제 입력칸 렌더 + 즉시 blur()
+#   - 업로드 시 회전 고정
 # ───────────────────────────────
 for p in st.session_state.photos:
     row = st.container(border=True)
@@ -290,7 +333,7 @@ for p in st.session_state.photos:
         c1, c2 = st.columns([4, 1], vertical_alignment="center")
 
         with c1:
-            # 현재 선택값 결정
+            # 선택 유지
             if p.get("choice") in options:
                 default_index = options.index(p["choice"])
             else:
@@ -305,24 +348,14 @@ for p in st.session_state.photos:
             )
             p["choice"] = selected_val
 
-            # 항상 같은 text_input 위젯 key를 유지
-            # 단, 직접입력일 때만 활성화(disabled=False)
-            is_custom_mode = (p["choice"] == "직접입력")
-
-            p["custom"] = st.text_input(
-                "직접입력",
-                value=p.get("custom", ""),
-                key=f"custom_{p['id']}",
-                placeholder="항목 직접 입력",
-                disabled=not is_custom_mode,        # ★ 핵심: 직접입력 아닐 땐 비활성화
-            )
+            # 여기서만 custom 입력칸 그리기 / blur 처리
+            render_custom_input(p)
 
         with c2:
             p["checked"] = st.checkbox(
                 "선택", key=f"chk_{p['id']}", value=p.get("checked", False)
             )
 
-        # 사진 업로더
         upload = st.file_uploader(
             "사진 등록",
             type=["jpg", "jpeg", "png"],
@@ -361,8 +394,13 @@ with btn_c3:
         valid_items = []
         for p in st.session_state.photos:
             if p.get("img") is not None:
-                label = p["custom"].strip() if (p["choice"] == "직접입력" and p.get("custom", "").strip()) else p["choice"]
+                label = (
+                    p["custom"].strip()
+                    if (p["choice"] == "직접입력" and p.get("custom", "").strip())
+                    else p["choice"]
+                )
                 valid_items.append((label, p["img"]))
+
         if not valid_items:
             st.warning("📸 사진이 등록된 항목이 없습니다.")
         else:
