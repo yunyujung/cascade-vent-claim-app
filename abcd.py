@@ -5,12 +5,14 @@ os.system("pip install streamlit reportlab pillow")
 # 캐스케이드/환기 기성 청구 양식
 # - 추가 버튼 단일 클릭만으로 즉시 행 추가 (중복 방지 플래그)
 # - 드롭다운은 기본 selectbox 사용 (아래로 펼침)
-# - '직접입력' 선택할 때만 키보드 입력창 표시
+# - '직접입력' 선택 시에만 입력칸 노출
+# - PDF에 사진 넣을 때, EXIF 기반 자동회전 금지 문제가 아니라
+#   사용자가 보는 방향(앨범 방향) 그대로 맞추도록 보정
 
 import io, re, unicodedata, uuid, os
 from typing import List, Tuple, Optional
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageOps  # ★ ImageOps 추가
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import (
     SimpleDocTemplate,
@@ -34,9 +36,6 @@ st.set_page_config(page_title="캐스케이드/환기 기성 청구 양식", lay
 
 # ───────────────────────────────
 # 세션 초기화 / 추가버튼 처리
-#   - add_pending: 추가 버튼을 눌렀다는 신호만 저장
-#   - 이 신호를 보고 맨 처음에만 1건 append → 즉시 False로
-#   (모바일 더블탭/딜레이 등으로 2번씩 눌러야 하는 문제 줄이기)
 # ───────────────────────────────
 if "photos" not in st.session_state:
     st.session_state.photos = [
@@ -66,7 +65,7 @@ if st.session_state.add_pending:
             "img": None,
         }
     )
-    st.session_state.add_pending = False  # 바로 초기화
+    st.session_state.add_pending = False  # 플래그 바로 초기화
 
 
 # ───────────────────────────────
@@ -123,12 +122,29 @@ styles = {
 # ───────────────────────────────
 def sanitize_filename(name: str) -> str:
     name = unicodedata.normalize("NFKD", name)
-    return (
-        re.sub(r"[\\/:*?\"<>|]", "_", name).strip().strip(".") or "output"
-    )
+    return re.sub(r"[\\/:*?\"<>|]", "_", name).strip().strip(".") or "output"
+
+
+def normalize_orientation(img: Image.Image) -> Image.Image:
+    """
+    앨범에서 보이는 방향을 그대로 쓰도록 EXIF 회전 정보를 반영해
+    '사람이 보는 방향'으로 고정된 bitmap을 만든다.
+    아이폰 세로사진이 PDF에서 90도로 눕는 문제 방지 핵심.
+    """
+    try:
+        img = ImageOps.exif_transpose(img)  # ★ 회전 보정
+    except Exception:
+        # EXIF 없거나 Pillow가 못 읽어도 그냥 넘어감
+        pass
+    # convert("RGB")는 마지막에 (EXIF 날리면서 고정 상태로) 해준다
+    return img.convert("RGB")
 
 
 def enforce_aspect_pad(img: Image.Image, target_ratio: float = 4 / 3) -> Image.Image:
+    """
+    PDF 칸 비율(4:3 기준)에 맞추려고 여백만 넣는 함수.
+    여기서는 우리가 회전 보정된 img를 그대로 씀.
+    """
     w, h = img.size
     cur_ratio = w / h
     if abs(cur_ratio - target_ratio) < 1e-3:
@@ -205,8 +221,11 @@ def build_pdf(
 
     cells = []
     for label, pil_img in items:
-        pil_img = enforce_aspect_pad(pil_img)
-        bio = _pil_to_bytesio(pil_img)
+        # 여기서도 혹시나 대비해서 마지막으로 방향 보정 한 번 더
+        pil_img_fixed = normalize_orientation(pil_img)  # ★ 회전 고정
+        pil_img_fixed = enforce_aspect_pad(pil_img_fixed)
+
+        bio = _pil_to_bytesio(pil_img_fixed)
         rl_img = RLImage(bio, width=IMAGE_MAX_W, height=IMAGE_MAX_H)
 
         cell = Table(
@@ -282,8 +301,8 @@ st.divider()
 
 # ───────────────────────────────
 # 항목별 UI
-#   - 드롭다운(selectbox)은 항상 아래로 펼침 (Streamlit 기본 동작)
-#   - "직접입력"일 때만 text_input으로 키보드 입력창 노출
+#   - 업로드 시 즉시 방향 보정(normalize_orientation) 해서 저장
+#   - '직접입력'일 때만 키보드 입력칸
 # ───────────────────────────────
 for p in st.session_state.photos:
     row = st.container(border=True)
@@ -306,7 +325,7 @@ for p in st.session_state.photos:
             )
             p["choice"] = selected_val
 
-            # '직접입력'일 때만 키보드 입력칸 보여주기
+            # '직접입력'일 때만 키보드 입력칸 노출
             if p["choice"] == "직접입력":
                 p["custom"] = st.text_input(
                     "직접입력",
@@ -315,13 +334,11 @@ for p in st.session_state.photos:
                     placeholder="항목 직접 입력",
                 )
             else:
-                # 다른 옵션인 경우엔 custom 값 굳이 남아 있어도 상관없지만
-                # 빈문자 유지 정도로만 정리
                 if "custom" not in p:
                     p["custom"] = ""
 
         with c2:
-            # 체크박스 (동일 라인 오른쪽)
+            # 체크박스 (같은 줄 오른쪽)
             p["checked"] = st.checkbox(
                 "선택", key=f"chk_{p['id']}", value=p.get("checked", False)
             )
@@ -333,9 +350,12 @@ for p in st.session_state.photos:
             key=f"up_{p['id']}",
         )
         if upload:
-            p["img"] = Image.open(upload).convert("RGB")
+            # ★ 업로드 직후 바로 사람 눈 기준 방향으로 고정해서 저장
+            original = Image.open(upload)
+            p["img"] = normalize_orientation(original)
 
         if p["img"]:
+            # 화면 미리보기도 같은 (고정된) 방향으로 보여줌
             st.image(p["img"], use_container_width=True)
 
 st.divider()
@@ -343,14 +363,10 @@ st.divider()
 
 # ───────────────────────────────
 # 버튼 영역
-#   - ➕ 추가 → add_pending=True만 세팅하고 즉시 rerun에서 1행 추가
-#   - 삭제 / PDF 생성
 # ───────────────────────────────
 btn_c1, btn_c2, btn_c3 = st.columns([1, 1, 2])
 
 with btn_c1:
-    # 버튼을 누르면 add_pending만 True로 설정
-    # 실제 append는 맨 위에서 add_pending 처리 로직이 한 번만 수행
     if st.button("➕ 추가", key="add_row", use_container_width=True):
         st.session_state.add_pending = True
         st.rerun()
@@ -360,7 +376,6 @@ with btn_c2:
         st.session_state.photos = [
             p for p in st.session_state.photos if not p["checked"]
         ]
-        # 삭제 후 체크 상태 초기화
         for p in st.session_state.photos:
             p["checked"] = False
         st.rerun()
