@@ -3,16 +3,15 @@ os.system("pip install streamlit reportlab pillow")
 
 # -*- coding: utf-8 -*-
 # 캐스케이드/환기 기성 청구 양식
-# - 추가 버튼 단일 클릭만으로 즉시 행 추가 (중복 방지 플래그)
-# - 드롭다운은 기본 selectbox 사용 (아래로 펼침)
-# - '직접입력' 선택 시에만 입력칸 노출
-# - PDF에 사진 넣을 때, EXIF 기반 자동회전 금지 문제가 아니라
-#   사용자가 보는 방향(앨범 방향) 그대로 맞추도록 보정
+# - 추가 버튼 1번으로 즉시 추가 (add_pending 플래그)
+# - 사진 방향 EXIF 기준으로 고정해서 PDF (normalize_orientation)
+# - 드롭다운 눌러도 키보드 안 튀어나오게:
+#   직접입력 text_input을 항상 렌더하고, 필요 없을 땐 disabled
 
 import io, re, unicodedata, uuid, os
 from typing import List, Tuple, Optional
 import streamlit as st
-from PIL import Image, ImageOps  # ★ ImageOps 추가
+from PIL import Image, ImageOps
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import (
     SimpleDocTemplate,
@@ -27,12 +26,10 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-
 # ───────────────────────────────
 # 페이지 설정
 # ───────────────────────────────
 st.set_page_config(page_title="캐스케이드/환기 기성 청구 양식", layout="wide")
-
 
 # ───────────────────────────────
 # 세션 초기화 / 추가버튼 처리
@@ -65,8 +62,7 @@ if st.session_state.add_pending:
             "img": None,
         }
     )
-    st.session_state.add_pending = False  # 플래그 바로 초기화
-
+    st.session_state.add_pending = False  # 플래그 해제
 
 # ───────────────────────────────
 # 폰트 등록
@@ -85,7 +81,6 @@ def try_register_font():
         except Exception:
             pass
     return "Helvetica", False
-
 
 BASE_FONT, _ = try_register_font()
 ss = getSampleStyleSheet()
@@ -116,7 +111,6 @@ styles = {
     ),
 }
 
-
 # ───────────────────────────────
 # 유틸 함수
 # ───────────────────────────────
@@ -124,27 +118,15 @@ def sanitize_filename(name: str) -> str:
     name = unicodedata.normalize("NFKD", name)
     return re.sub(r"[\\/:*?\"<>|]", "_", name).strip().strip(".") or "output"
 
-
 def normalize_orientation(img: Image.Image) -> Image.Image:
-    """
-    앨범에서 보이는 방향을 그대로 쓰도록 EXIF 회전 정보를 반영해
-    '사람이 보는 방향'으로 고정된 bitmap을 만든다.
-    아이폰 세로사진이 PDF에서 90도로 눕는 문제 방지 핵심.
-    """
+    # 앨범에서 보이던 방향 그대로 고정
     try:
-        img = ImageOps.exif_transpose(img)  # ★ 회전 보정
+        img = ImageOps.exif_transpose(img)
     except Exception:
-        # EXIF 없거나 Pillow가 못 읽어도 그냥 넘어감
         pass
-    # convert("RGB")는 마지막에 (EXIF 날리면서 고정 상태로) 해준다
     return img.convert("RGB")
 
-
 def enforce_aspect_pad(img: Image.Image, target_ratio: float = 4 / 3) -> Image.Image:
-    """
-    PDF 칸 비율(4:3 기준)에 맞추려고 여백만 넣는 함수.
-    여기서는 우리가 회전 보정된 img를 그대로 씀.
-    """
     w, h = img.size
     cur_ratio = w / h
     if abs(cur_ratio - target_ratio) < 1e-3:
@@ -159,13 +141,11 @@ def enforce_aspect_pad(img: Image.Image, target_ratio: float = 4 / 3) -> Image.I
     canvas.paste(img, ((new_w - w) // 2, (new_h - h) // 2))
     return canvas
 
-
 def _pil_to_bytesio(img: Image.Image, quality=85) -> io.BytesIO:
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality, optimize=True)
     buf.seek(0)
     return buf
-
 
 # ───────────────────────────────
 # PDF 생성
@@ -221,8 +201,7 @@ def build_pdf(
 
     cells = []
     for label, pil_img in items:
-        # 여기서도 혹시나 대비해서 마지막으로 방향 보정 한 번 더
-        pil_img_fixed = normalize_orientation(pil_img)  # ★ 회전 고정
+        pil_img_fixed = normalize_orientation(pil_img)  # 안전하게 최종 고정
         pil_img_fixed = enforce_aspect_pad(pil_img_fixed)
 
         bio = _pil_to_bytesio(pil_img_fixed)
@@ -269,7 +248,6 @@ def build_pdf(
     doc.build(story)
     return buf.getvalue()
 
-
 # ───────────────────────────────
 # 상단 공통 입력
 # ───────────────────────────────
@@ -298,11 +276,13 @@ site_addr = st.text_input("현장 주소", "", key="site_addr")
 
 st.divider()
 
-
 # ───────────────────────────────
 # 항목별 UI
-#   - 업로드 시 즉시 방향 보정(normalize_orientation) 해서 저장
-#   - '직접입력'일 때만 키보드 입력칸
+#   - text_input은 항상 존재하지만
+#     직접입력 아닐 때는 disabled=True라서 포커스/키보드 안 뜸
+#   - 직접입력일 때만 disabled=False라 실제로 입력 가능
+#   - 이렇게 하면 selectbox 눌러도 새 input이 "생성"되지 않아서
+#     모바일이 키보드를 안 올림
 # ───────────────────────────────
 for p in st.session_state.photos:
     row = st.container(border=True)
@@ -310,7 +290,7 @@ for p in st.session_state.photos:
         c1, c2 = st.columns([4, 1], vertical_alignment="center")
 
         with c1:
-            # 드롭다운
+            # 현재 선택값 결정
             if p.get("choice") in options:
                 default_index = options.index(p["choice"])
             else:
@@ -325,20 +305,19 @@ for p in st.session_state.photos:
             )
             p["choice"] = selected_val
 
-            # '직접입력'일 때만 키보드 입력칸 노출
-            if p["choice"] == "직접입력":
-                p["custom"] = st.text_input(
-                    "직접입력",
-                    value=p.get("custom", ""),
-                    key=f"custom_{p['id']}",
-                    placeholder="항목 직접 입력",
-                )
-            else:
-                if "custom" not in p:
-                    p["custom"] = ""
+            # 항상 같은 text_input 위젯 key를 유지
+            # 단, 직접입력일 때만 활성화(disabled=False)
+            is_custom_mode = (p["choice"] == "직접입력")
+
+            p["custom"] = st.text_input(
+                "직접입력",
+                value=p.get("custom", ""),
+                key=f"custom_{p['id']}",
+                placeholder="항목 직접 입력",
+                disabled=not is_custom_mode,        # ★ 핵심: 직접입력 아닐 땐 비활성화
+            )
 
         with c2:
-            # 체크박스 (같은 줄 오른쪽)
             p["checked"] = st.checkbox(
                 "선택", key=f"chk_{p['id']}", value=p.get("checked", False)
             )
@@ -350,16 +329,13 @@ for p in st.session_state.photos:
             key=f"up_{p['id']}",
         )
         if upload:
-            # ★ 업로드 직후 바로 사람 눈 기준 방향으로 고정해서 저장
             original = Image.open(upload)
             p["img"] = normalize_orientation(original)
 
         if p["img"]:
-            # 화면 미리보기도 같은 (고정된) 방향으로 보여줌
             st.image(p["img"], use_container_width=True)
 
 st.divider()
-
 
 # ───────────────────────────────
 # 버튼 영역
@@ -373,9 +349,7 @@ with btn_c1:
 
 with btn_c2:
     if st.button("🗑 선택 삭제", key="del_rows", use_container_width=True):
-        st.session_state.photos = [
-            p for p in st.session_state.photos if not p["checked"]
-        ]
+        st.session_state.photos = [p for p in st.session_state.photos if not p["checked"]]
         for p in st.session_state.photos:
             p["checked"] = False
         st.rerun()
@@ -387,21 +361,14 @@ with btn_c3:
         valid_items = []
         for p in st.session_state.photos:
             if p.get("img") is not None:
-                if p["choice"] == "직접입력" and p.get("custom", "").strip():
-                    label = p["custom"].strip()
-                else:
-                    label = p["choice"]
+                label = p["custom"].strip() if (p["choice"] == "직접입력" and p.get("custom", "").strip()) else p["choice"]
                 valid_items.append((label, p["img"]))
-
         if not valid_items:
             st.warning("📸 사진이 등록된 항목이 없습니다.")
         else:
-            pdf_bytes = build_pdf(
-                f"{mode} 기성 청구 양식", site_addr, valid_items
-            )
+            pdf_bytes = build_pdf(f"{mode} 기성 청구 양식", site_addr, valid_items)
             st.session_state.pdf_bytes = pdf_bytes
             st.rerun()
-
 
 # ───────────────────────────────
 # PDF 다운로드 버튼
