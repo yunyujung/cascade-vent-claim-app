@@ -3,11 +3,10 @@ os.system("pip install streamlit reportlab pillow")
 
 # -*- coding: utf-8 -*-
 # 캐스케이드/환기 기성 청구 양식
-# - 모바일에서 드롭다운만 눌렀는데 키보드 올라오는 문제 해결:
-#   직접입력 아닐 때는 text_input 자체를 아예 렌더하지 않음
-#   직접입력일 때만 text_input을 렌더하고, 즉시 blur() 처리해서 자동 포커스 빼버림
-# - 추가 버튼 1번 클릭 즉시 추가 (add_pending)
-# - 사진 방향 고정하여 PDF에 넣기
+# - selectbox 제거 → radio 기반 선택 (모바일 키보드 튀는 문제 차단)
+# - "직접입력" 선택시에만 text_input + 그때만 키보드 올라옴
+# - 추가 버튼 1번만 눌러도 즉시 추가 (add_pending)
+# - 사진 방향(EXIF) 고정 후 PDF에 반영
 
 import io, re, unicodedata, uuid, os
 from typing import List, Tuple, Optional
@@ -41,7 +40,7 @@ if "photos" not in st.session_state:
     st.session_state.photos = [
         {
             "id": str(uuid.uuid4()),
-            "choice": "장비납품",
+            "choice": "장비납품",  # 기본값
             "custom": "",
             "checked": False,
             "img": None,
@@ -65,7 +64,7 @@ if st.session_state.add_pending:
             "img": None,
         }
     )
-    st.session_state.add_pending = False  # 플래그 해제
+    st.session_state.add_pending = False
 
 
 # ───────────────────────────────
@@ -115,6 +114,7 @@ styles = {
     ),
 }
 
+
 # ───────────────────────────────
 # 유틸 함수
 # ───────────────────────────────
@@ -122,15 +122,18 @@ def sanitize_filename(name: str) -> str:
     name = unicodedata.normalize("NFKD", name)
     return re.sub(r"[\\/:*?\"<>|]", "_", name).strip().strip(".") or "output"
 
+
 def normalize_orientation(img: Image.Image) -> Image.Image:
-    # 앨범에서 보이던 방향 그대로 강제 고정
+    # 앨범에서 보던 방향 그대로 강제 고정
     try:
         img = ImageOps.exif_transpose(img)
     except Exception:
         pass
     return img.convert("RGB")
 
+
 def enforce_aspect_pad(img: Image.Image, target_ratio: float = 4 / 3) -> Image.Image:
+    # PDF 셀 비율 맞추려고 흰 여백만 추가
     w, h = img.size
     cur_ratio = w / h
     if abs(cur_ratio - target_ratio) < 1e-3:
@@ -145,50 +148,12 @@ def enforce_aspect_pad(img: Image.Image, target_ratio: float = 4 / 3) -> Image.I
     canvas.paste(img, ((new_w - w) // 2, (new_h - h) // 2))
     return canvas
 
+
 def _pil_to_bytesio(img: Image.Image, quality=85) -> io.BytesIO:
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality, optimize=True)
     buf.seek(0)
     return buf
-
-# ───────────────────────────────
-# (중요) 직접입력 필드 렌더 함수
-#   - 직접입력 모드일 때만 실제 text_input 위젯 만들기
-#   - 그리고 JS로 blur() 바로 걸어서 자동 포커스 빼기 (모바일 키보드 강제 닫힘 유도)
-#   - 직접입력 아닐 때는 text_input 자체를 아예 안 그림 → 키보드 절대 안 뜸
-# ───────────────────────────────
-def render_custom_input(p):
-    is_custom_mode = (p["choice"] == "직접입력")
-
-    if is_custom_mode:
-        # 실제 text_input 렌더
-        new_val = st.text_input(
-            "직접입력",
-            value=p.get("custom", ""),
-            key=f"custom_{p['id']}",
-            placeholder="항목 직접 입력",
-        )
-        p["custom"] = new_val
-
-        # JS로 이 input에 자동 포커스된 걸 즉시 blur()시켜서 키보드 내려가게
-        # (id는 Streamlit이 자동생성하므로 직접 지정은 어렵지만,
-        #  document.activeElement.blur() 로 전체 포커스 제거 가능)
-        st.markdown(
-            """
-            <script>
-            setTimeout(function(){
-                if (document && document.activeElement) {
-                    document.activeElement.blur();
-                }
-            }, 50);
-            </script>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        # 직접입력 모드가 아니면 custom 값 유지만 하고 입력칸은 렌더하지 않는다
-        if "custom" not in p:
-            p["custom"] = ""
 
 
 # ───────────────────────────────
@@ -321,11 +286,12 @@ site_addr = st.text_input("현장 주소", "", key="site_addr")
 
 st.divider()
 
+
 # ───────────────────────────────
 # 항목별 UI
-#   - selectbox로 항목 선택
-#   - 직접입력일 경우에만 실제 입력칸 렌더 + 즉시 blur()
-#   - 업로드 시 회전 고정
+#   ✔ selectbox → radio로 교체 (모바일 키보드 안 뜨게)
+#   ✔ "직접입력"일 때만 텍스트 입력칸 실제로 렌더
+#   ✔ 그 외에는 절대 text_input 안 그리므로 키보드 자동팝업 없음
 # ───────────────────────────────
 for p in st.session_state.photos:
     row = st.container(border=True)
@@ -333,29 +299,35 @@ for p in st.session_state.photos:
         c1, c2 = st.columns([4, 1], vertical_alignment="center")
 
         with c1:
-            # 선택 유지
-            if p.get("choice") in options:
-                default_index = options.index(p["choice"])
-            else:
-                default_index = 0
-
-            selected_val = st.selectbox(
+            # 현재 선택값 유지: radio는 value 매칭으로 고정 가능
+            current_choice = p.get("choice", options[0])
+            p["choice"] = st.radio(
                 "항목",
                 options,
-                index=default_index,
-                key=f"sel_{p['id']}",
+                key=f"choice_radio_{p['id']}",
+                index=options.index(current_choice) if current_choice in options else 0,
+                horizontal=False,  # 세로 나열 (모바일에서 더 안정적 터치)
                 label_visibility="collapsed",
             )
-            p["choice"] = selected_val
 
-            # 여기서만 custom 입력칸 그리기 / blur 처리
-            render_custom_input(p)
+            # "직접입력"일 때만 실제 input 렌더 (-> 이때만 키보드 나올 수 있음)
+            if p["choice"] == "직접입력":
+                p["custom"] = st.text_input(
+                    "직접입력",
+                    value=p.get("custom", ""),
+                    key=f"custom_{p['id']}",
+                    placeholder="항목 직접 입력",
+                )
+            else:
+                if "custom" not in p:
+                    p["custom"] = ""
 
         with c2:
             p["checked"] = st.checkbox(
                 "선택", key=f"chk_{p['id']}", value=p.get("checked", False)
             )
 
+        # 사진 업로드 + 방향 고정
         upload = st.file_uploader(
             "사진 등록",
             type=["jpg", "jpeg", "png"],
@@ -369,6 +341,7 @@ for p in st.session_state.photos:
             st.image(p["img"], use_container_width=True)
 
 st.divider()
+
 
 # ───────────────────────────────
 # 버튼 영역
@@ -394,11 +367,11 @@ with btn_c3:
         valid_items = []
         for p in st.session_state.photos:
             if p.get("img") is not None:
-                label = (
-                    p["custom"].strip()
-                    if (p["choice"] == "직접입력" and p.get("custom", "").strip())
-                    else p["choice"]
-                )
+                # 라디오에서 선택된 값이 '직접입력'이면 custom 사용
+                if p["choice"] == "직접입력" and p.get("custom", "").strip():
+                    label = p["custom"].strip()
+                else:
+                    label = p["choice"]
                 valid_items.append((label, p["img"]))
 
         if not valid_items:
