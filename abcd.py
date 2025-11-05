@@ -2,7 +2,7 @@ import os
 os.system("pip install streamlit reportlab pillow")
 
 # -*- coding: utf-8 -*-
-# 캐스케이드/환기 기성 청구 양식
+# 캐스케이드/환기 기성 청구 양식(현장사진)
 # - selectbox 제거 → radio 기반 선택 (모바일 키보드 튀는 문제 차단)
 # - "직접입력" 선택시에만 text_input + 그때만 키보드 올라옴
 # - 추가 버튼 1번만 눌러도 즉시 추가 (add_pending)
@@ -26,12 +26,21 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-
 # ───────────────────────────────
-# 페이지 설정
+# 페이지 설정 (탭 제목)
 # ───────────────────────────────
-st.set_page_config(page_title="캐스케이드/환기 기성 청구 양식", layout="wide")
+st.set_page_config(page_title="캐스케이드/ 환기 기성 청구 양식(현장사진)", layout="wide")
 
+# 앱 본문 상단 제목
+st.markdown(
+    """
+    <h2 style='text-align:center; margin: 0.5rem 0 0.25rem 0;'>
+        캐스케이드/ 환기 기성 청구 양식(현장사진)
+    </h2>
+    <hr style='border:1px solid #e5e7eb; margin: 0 0 1rem 0;'>
+    """,
+    unsafe_allow_html=True
+)
 
 # ───────────────────────────────
 # 세션 초기화 / 추가버튼 처리
@@ -66,9 +75,8 @@ if st.session_state.add_pending:
     )
     st.session_state.add_pending = False
 
-
 # ───────────────────────────────
-# 폰트 등록
+# 폰트 등록 (PDF용)
 # ───────────────────────────────
 def try_register_font():
     candidates = [
@@ -114,14 +122,12 @@ styles = {
     ),
 }
 
-
 # ───────────────────────────────
 # 유틸 함수
 # ───────────────────────────────
 def sanitize_filename(name: str) -> str:
     name = unicodedata.normalize("NFKD", name)
     return re.sub(r"[\\/:*?\"<>|]", "_", name).strip().strip(".") or "output"
-
 
 def normalize_orientation(img: Image.Image) -> Image.Image:
     # 앨범에서 보던 방향 그대로 강제 고정
@@ -130,7 +136,6 @@ def normalize_orientation(img: Image.Image) -> Image.Image:
     except Exception:
         pass
     return img.convert("RGB")
-
 
 def enforce_aspect_pad(img: Image.Image, target_ratio: float = 4 / 3) -> Image.Image:
     # PDF 셀 비율 맞추려고 흰 여백만 추가
@@ -148,13 +153,11 @@ def enforce_aspect_pad(img: Image.Image, target_ratio: float = 4 / 3) -> Image.I
     canvas.paste(img, ((new_w - w) // 2, (new_h - h) // 2))
     return canvas
 
-
 def _pil_to_bytesio(img: Image.Image, quality=85) -> io.BytesIO:
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality, optimize=True)
     buf.seek(0)
     return buf
-
 
 # ───────────────────────────────
 # PDF 생성
@@ -257,7 +260,6 @@ def build_pdf(
     doc.build(story)
     return buf.getvalue()
 
-
 # ───────────────────────────────
 # 상단 공통 입력
 # ───────────────────────────────
@@ -285,7 +287,6 @@ options = CASCADE_OPTIONS if mode == "캐스케이드" else VENT_OPTIONS
 site_addr = st.text_input("현장 주소", "", key="site_addr")
 
 st.divider()
-
 
 # ───────────────────────────────
 # 항목별 UI
@@ -342,7 +343,6 @@ for p in st.session_state.photos:
 
 st.divider()
 
-
 # ───────────────────────────────
 # 버튼 영역
 # ───────────────────────────────
@@ -377,7 +377,7 @@ with btn_c3:
         if not valid_items:
             st.warning("📸 사진이 등록된 항목이 없습니다.")
         else:
-            pdf_bytes = build_pdf(f"{mode} 기성 청구 양식", site_addr, valid_items)
+            pdf_bytes = build_pdf("캐스케이드/ 환기 기성 청구 양식(현장사진)", site_addr, valid_items)
             st.session_state.pdf_bytes = pdf_bytes
             st.rerun()
 
@@ -385,7 +385,7 @@ with btn_c3:
 # PDF 다운로드 버튼
 # ───────────────────────────────
 if st.session_state.pdf_bytes:
-    fname = f"{sanitize_filename(site_addr)}_{mode}_기성청구.pdf"
+    fname = f"{sanitize_filename(site_addr)}_{('캐스케이드' if mode=='캐스케이드' else '환기')}_기성청구(현장사진).pdf"
     with download_area.container():
         st.success("✅ PDF 생성 완료! 아래 버튼으로 바로 다운로드하세요.")
         st.download_button(
