@@ -135,7 +135,7 @@ def normalize_orientation(img: Image.Image) -> Image.Image:
 def enforce_aspect_pad(img: Image.Image, target_ratio: float = 4 / 3) -> Image.Image:
     w, h = img.size
     cur_ratio = w / h
-    if abs(cur_ratio - target target_ratio) < 1e-3:
+    if abs(cur_ratio - target_ratio) < 1e-3:
         return img
     if cur_ratio > target_ratio:
         new_h = int(round(w / target_ratio))
@@ -379,3 +379,4 @@ if st.session_state.pdf_bytes:
             key="dl_pdf",
             use_container_width=True,
         )
+
