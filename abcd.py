@@ -2,7 +2,7 @@ import os
 os.system("pip install streamlit reportlab pillow")
 
 # -*- coding: utf-8 -*-
-# 캐스케이드/환기 기성 청구 양식(현장사진)
+# 경동나비엔 캐스케이드/환기 기성 청구 양식(현장사진)
 # - selectbox 제거 → radio 기반 선택 (모바일 키보드 튀는 문제 차단)
 # - "직접입력" 선택시에만 text_input + 그때만 키보드 올라옴
 # - 추가 버튼 1번만 눌러도 즉시 추가 (add_pending)
@@ -30,14 +30,14 @@ from reportlab.pdfbase.ttfonts import TTFont
 # ───────────────────────────────
 # 페이지 설정 (탭 제목)
 # ───────────────────────────────
-st.set_page_config(page_title="캐스케이드/ 환기 기성 청구 양식(현장사진)", layout="wide")
+st.set_page_config(page_title="경동나비엔 캐스케이드/ 환기 기성 청구 양식(현장사진)", layout="wide")
 
 # ✅ 제목만 작게 보이도록 조정 (기능 변경 없음)
 st.markdown(
     """
     <div style='text-align:center; margin: 0.25rem 0 0.5rem 0;'>
         <span style='font-size:1.05rem; font-weight:600;'>
-            캐스케이드/ 환기 기성 청구 양식(현장사진)
+            경동나비엔 캐스케이드/ 환기 기성 청구 양식(현장사진)
         </span>
     </div>
     <hr style='border:1px solid #e5e7eb; margin: 0 0 0.75rem 0;'>
@@ -387,7 +387,7 @@ with btn_c3:
         if not valid_items:
             st.warning("📸 사진이 등록된 항목이 없습니다.")
         else:
-            pdf_bytes = build_pdf("캐스케이드/ 환기 기성 청구 양식(현장사진)", site_addr, valid_items)
+            pdf_bytes = build_pdf("경동나비엔 캐스케이드/ 환기 기성 청구 양식(현장사진)", site_addr, valid_items)
             st.session_state.pdf_bytes = pdf_bytes
             st.rerun()
 
@@ -406,3 +406,4 @@ if st.session_state.pdf_bytes:
             key="dl_pdf",
             use_container_width=True,
         )
+
