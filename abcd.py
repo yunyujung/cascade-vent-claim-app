@@ -3,10 +3,6 @@ os.system("pip install streamlit reportlab pillow")
 
 # -*- coding: utf-8 -*-
 # 경동나비엔 캐스케이드/환기 기성 청구 양식(현장사진)
-# - selectbox 제거 → radio 기반 선택 (모바일 키보드 튀는 문제 차단)
-# - "직접입력" 선택시에만 text_input + 그때만 키보드 올라옴
-# - 추가 버튼 1번만 눌러도 즉시 추가 (add_pending)
-# - 사진 방향(EXIF) 고정 후 PDF에 반영
 
 import io, re, unicodedata, uuid, os
 from typing import List, Tuple, Optional
@@ -26,13 +22,11 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-
 # ───────────────────────────────
-# 페이지 설정 (탭 제목)
+# 페이지 설정
 # ───────────────────────────────
 st.set_page_config(page_title="경동나비엔 캐스케이드/ 환기 기성 청구 양식(현장사진)", layout="wide")
 
-# ✅ 제목만 작게 보이도록 조정 (기능 변경 없음)
 st.markdown(
     """
     <div style='text-align:center; margin: 0.25rem 0 0.5rem 0;'>
@@ -46,13 +40,13 @@ st.markdown(
 )
 
 # ───────────────────────────────
-# 세션 초기화 / 추가버튼 처리
+# 세션 초기화
 # ───────────────────────────────
 if "photos" not in st.session_state:
     st.session_state.photos = [
         {
             "id": str(uuid.uuid4()),
-            "choice": "장비납품",  # 기본값
+            "choice": "장비납품",
             "custom": "",
             "checked": False,
             "img": None,
@@ -65,7 +59,6 @@ if "pdf_bytes" not in st.session_state:
 if "add_pending" not in st.session_state:
     st.session_state.add_pending = False
 
-# add_pending 처리: rerun 직후 실제로 1행만 추가
 if st.session_state.add_pending:
     st.session_state.photos.append(
         {
@@ -78,9 +71,8 @@ if st.session_state.add_pending:
     )
     st.session_state.add_pending = False
 
-
 # ───────────────────────────────
-# 폰트 등록 (PDF용)
+# PDF용 폰트
 # ───────────────────────────────
 def try_register_font():
     candidates = [
@@ -126,7 +118,6 @@ styles = {
     ),
 }
 
-
 # ───────────────────────────────
 # 유틸 함수
 # ───────────────────────────────
@@ -134,21 +125,17 @@ def sanitize_filename(name: str) -> str:
     name = unicodedata.normalize("NFKD", name)
     return re.sub(r"[\\/:*?\"<>|]", "_", name).strip().strip(".") or "output"
 
-
 def normalize_orientation(img: Image.Image) -> Image.Image:
-    # 앨범에서 보던 방향 그대로 강제 고정
     try:
         img = ImageOps.exif_transpose(img)
     except Exception:
         pass
     return img.convert("RGB")
 
-
 def enforce_aspect_pad(img: Image.Image, target_ratio: float = 4 / 3) -> Image.Image:
-    # PDF 셀 비율 맞추려고 흰 여백만 추가
     w, h = img.size
     cur_ratio = w / h
-    if abs(cur_ratio - target_ratio) < 1e-3:
+    if abs(cur_ratio - target target_ratio) < 1e-3:
         return img
     if cur_ratio > target_ratio:
         new_h = int(round(w / target_ratio))
@@ -160,16 +147,14 @@ def enforce_aspect_pad(img: Image.Image, target_ratio: float = 4 / 3) -> Image.I
     canvas.paste(img, ((new_w - w) // 2, (new_h - h) // 2))
     return canvas
 
-
 def _pil_to_bytesio(img: Image.Image, quality=85) -> io.BytesIO:
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality, optimize=True)
     buf.seek(0)
     return buf
 
-
 # ───────────────────────────────
-# PDF 생성
+# PDF 생성 함수
 # ───────────────────────────────
 def build_pdf(
     doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Image.Image]]]
@@ -254,28 +239,15 @@ def build_pdf(
             colWidths=[col_width] * 3,
             rowHeights=[ROW_HEIGHT] * len(grid_rows),
         )
-        grid_tbl.setStyle(
-            TableStyle(
-                [
-                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-                    ("TOPPADDING", (0, 0), (-1, -1), 2),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                ]
-            )
-        )
         story.append(grid_tbl)
 
     doc.build(story)
     return buf.getvalue()
 
-
 # ───────────────────────────────
-# 상단 공통 입력
+# 상단 입력
 # ───────────────────────────────
-mode = st.radio(
-    "양식 선택", ["캐스케이드", "환기"], horizontal=True, key="mode_radio"
-)
+mode = st.radio("양식 선택", ["캐스케이드", "환기"], horizontal=True, key="mode_radio")
 
 CASCADE_OPTIONS = [
     "장비납품",
@@ -298,12 +270,8 @@ site_addr = st.text_input("현장 주소", "", key="site_addr")
 
 st.divider()
 
-
 # ───────────────────────────────
-# 항목별 UI (기존 로직 유지)
-#   ✔ radio 유지
-#   ✔ "직접입력"일 때만 text_input 렌더
-#   ✔ 사진 업로드 및 미리보기
+# 사진 입력 UI
 # ───────────────────────────────
 for p in st.session_state.photos:
     row = st.container(border=True)
@@ -317,7 +285,7 @@ for p in st.session_state.photos:
                 options,
                 key=f"choice_radio_{p['id']}",
                 index=options.index(current_choice) if current_choice in options else 0,
-                horizontal=False,  # 세로 나열 (모바일에서 더 안정적 터치)
+                horizontal=False,
                 label_visibility="collapsed",
             )
 
@@ -337,7 +305,6 @@ for p in st.session_state.photos:
                 "선택", key=f"chk_{p['id']}", value=p.get("checked", False)
             )
 
-        # 사진 업로드 + 방향 고정
         upload = st.file_uploader(
             "사진 등록",
             type=["jpg", "jpeg", "png"],
@@ -352,9 +319,8 @@ for p in st.session_state.photos:
 
 st.divider()
 
-
 # ───────────────────────────────
-# 버튼 영역 (기존 로직 유지)
+# 버튼 영역
 # ───────────────────────────────
 btn_c1, btn_c2, btn_c3 = st.columns([1, 1, 2])
 
@@ -374,10 +340,10 @@ download_area = st.empty()
 
 with btn_c3:
     if st.button("📄 PDF 생성", type="primary", key="make_pdf", use_container_width=True):
+
         valid_items = []
         for p in st.session_state.photos:
             if p.get("img") is not None:
-                # 라디오에서 선택된 값이 '직접입력'이면 custom 사용
                 if p["choice"] == "직접입력" and p.get("custom", "").strip():
                     label = p["custom"].strip()
                 else:
@@ -387,17 +353,24 @@ with btn_c3:
         if not valid_items:
             st.warning("📸 사진이 등록된 항목이 없습니다.")
         else:
-            pdf_bytes = build_pdf("경동나비엔 캐스케이드/ 환기 기성 청구 양식(현장사진)", site_addr, valid_items)
+
+            # ⭐ 여기서 제목이 mode에 따라 바뀜
+            title = f"경동나비엔 {mode} 기성 청구 양식(현장사진)"
+
+            pdf_bytes = build_pdf(title, site_addr, valid_items)
             st.session_state.pdf_bytes = pdf_bytes
             st.rerun()
 
 # ───────────────────────────────
-# PDF 다운로드 버튼 (기존 로직 유지)
+# PDF 다운로드 버튼
 # ───────────────────────────────
 if st.session_state.pdf_bytes:
-    fname = f"{sanitize_filename(site_addr)}_{('캐스케이드' if mode=='캐스케이드' else '환기')}_기성청구(현장사진).pdf"
+
+    # ⭐ 파일명도 mode에 따라 자동 변경
+    fname = f"{sanitize_filename(site_addr)}_{mode}_기성청구(현장사진).pdf"
+
     with download_area.container():
-        st.success("✅ PDF 생성 완료! 아래 버튼으로 바로 다운로드하세요.")
+        st.success("✅ PDF 생성 완료! 아래 버튼으로 다운로드하세요.")
         st.download_button(
             "⬇️ PDF 다운로드",
             st.session_state.pdf_bytes,
@@ -406,4 +379,3 @@ if st.session_state.pdf_bytes:
             key="dl_pdf",
             use_container_width=True,
         )
-
